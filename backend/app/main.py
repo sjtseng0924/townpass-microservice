@@ -15,7 +15,8 @@ origins = [
     "http://localhost:4173",
     "http://localhost:3000",
     "http://localhost:8080",
-    "https://townpass-microservice.web.app"
+    "https://townpass-microservice.web.app",
+    "https://townpass-microservice.firebaseapp.com",
 ]
 
 app.add_middleware(
@@ -32,4 +33,10 @@ app.include_router(router, prefix="/api", tags=["API"])
 def read_root():
     return {"message": "Welcome to the Taipei Hackathon Microservice!"}
 
-Base.metadata.create_all(bind=engine)
+@app.on_event("startup")
+def on_startup():
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        # 可改為紀錄日誌，不要讓整個服務啟動失敗
+        print(f"[startup] DB init skipped: {e}")
