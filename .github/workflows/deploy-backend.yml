@@ -60,25 +60,43 @@ jobs:
             --image ${{ env.AR_REPO_PATH }}:${{ github.sha }} \
             --region ${{ secrets.REGION }} \
             --set-cloudsql-instances "${{ secrets.INSTANCE_CONNECTION_NAME }}" \
-            --set-env-vars "DATABASE_URL=${{ steps.dburl.outputs.DATABASE_URL }}" \
-            --command "alembic" \
-            --args "upgrade","head" \
+            --set-env-vars "DATABASE_URL=${{ steps.dburl.outputs.DATABASE_URL }},PYTHONUNBUFFERED=1,PYTHONPATH=/app" \
+            --command "python" \
+            --args "-m","alembic","-c","alembic.ini","upgrade","head" \
             --max-retries 1 \
             --memory 512Mi \
             --cpu 1
 
-      - name: Run DB Migration Job
+      - name: Run DB Migration Job (execute & print logs)
+        env:
+          REGION: ${{ secrets.REGION }}
         run: |
           set +e
-          gcloud run jobs execute fastapi-db-migrate \
-            --region ${{ secrets.REGION }} --wait
+
+          # 1) 先觸發執行
+          gcloud run jobs execute fastapi-db-migrate --region "$REGION" --format='value(name)'
+
+          # 2) 取出最新一筆 execution 名稱
+          EXEC_NAME="$(gcloud run jobs executions list \
+            --job fastapi-db-migrate \
+            --region "$REGION" \
+            --limit 1 --format='value(name)')"
+          echo "Execution: ${EXEC_NAME}"
+
+          # 3) 等待該 execution 完成
+          gcloud run jobs executions wait "$EXEC_NAME" --region "$REGION"
           EXIT_CODE=$?
           echo "Job exit code: ${EXIT_CODE}"
 
-          echo "---- Recent Job Logs ----"
+          echo "---- Execution details ----"
+          gcloud run jobs executions describe "$EXEC_NAME" --region "$REGION" --format=yaml || true
+
+          echo "---- Recent Job Logs (container output) ----"
           gcloud logging read \
-            'resource.type="run_job" AND resource.labels.job_name="fastapi-db-migrate"' \
-            --limit=200 --format='value(textPayload)' || true
+            'resource.type="cloud_run_job"
+            AND labels."run.googleapis.com/execution_name"="'$EXEC_NAME'"' \
+            --freshness=24h --limit=500 \
+            --format='table(timestamp, severity, textPayload, jsonPayload.message)' || true
 
           exit ${EXIT_CODE}
           
