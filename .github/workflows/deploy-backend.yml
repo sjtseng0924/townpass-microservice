@@ -59,7 +59,7 @@ jobs:
           gcloud run jobs deploy fastapi-db-migrate \
             --image ${{ env.AR_REPO_PATH }}:${{ github.sha }} \
             --region ${{ secrets.REGION }} \
-            --add-cloudsql-instances "${{ secrets.INSTANCE_CONNECTION_NAME }}" \
+            --set-cloudsql-instances "${{ secrets.INSTANCE_CONNECTION_NAME }}" \
             --set-env-vars "DATABASE_URL=${{ steps.dburl.outputs.DATABASE_URL }}" \
             --command "alembic" \
             --args "upgrade","head" \
@@ -71,7 +71,7 @@ jobs:
         run: |
           gcloud run jobs execute fastapi-db-migrate \
             --region ${{ secrets.REGION }} --wait
-            
+
       # Deploy to Cloud Run
       - name: Deploy
         env:
