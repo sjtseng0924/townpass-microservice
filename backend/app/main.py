@@ -32,11 +32,3 @@ app.include_router(router, prefix="/api", tags=["API"])
 @app.get("/")
 def read_root():
     return {"message": "Welcome to the Taipei Hackathon Microservice!"}
-
-@app.on_event("startup")
-def on_startup():
-    try:
-        Base.metadata.create_all(bind=engine)
-    except Exception as e:
-        # 可改為紀錄日誌，不要讓整個服務啟動失敗
-        print(f"[startup] DB init skipped: {e}")
