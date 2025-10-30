@@ -71,32 +71,27 @@ jobs:
         env:
           REGION: ${{ secrets.REGION }}
         run: |
-          set +e
-
-          gcloud run jobs execute fastapi-db-migrate --region "$REGION" --format='value(name)'
-
-          EXEC_NAME="$(gcloud run jobs executions list \
-            --job fastapi-db-migrate \
+          set -e
+      
+          # 啟動並同步等待完成，成功時會回傳 execution 名稱
+          EXEC_NAME="$(gcloud run jobs execute fastapi-db-migrate \
             --region "$REGION" \
-            --limit 1 --format='value(name)')"
+            --wait \
+            --format='value(name)')"
+      
           echo "Execution: ${EXEC_NAME}"
-
-          gcloud run jobs executions wait "$EXEC_NAME" --region "$REGION"
-          EXIT_CODE=$?
-          echo "Job exit code: ${EXIT_CODE}"
-
+      
           echo "---- Execution details ----"
-          gcloud run jobs executions describe "$EXEC_NAME" --region "$REGION" --format=yaml || true
-
+          gcloud run jobs executions describe "$EXEC_NAME" \
+            --region "$REGION" --format=yaml || true
+      
           echo "---- Recent Job Logs (container output) ----"
           gcloud logging read \
             'resource.type="cloud_run_job"
-            AND labels."run.googleapis.com/execution_name"="'$EXEC_NAME'"' \
+             AND labels."run.googleapis.com/execution_name"="'$EXEC_NAME'"' \
             --freshness=24h --limit=500 \
-            --format='table(timestamp, severity, textPayload, jsonPayload.message)' || true
+            --format='table(timestamp, severity, textPayload, jsonPayload.message, protoPayload.status.message)' || true
 
-          exit ${EXIT_CODE}
-          
       # Deploy to Cloud Run
       - name: Deploy
         env:
