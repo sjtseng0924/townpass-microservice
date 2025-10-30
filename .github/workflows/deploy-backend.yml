@@ -62,10 +62,16 @@ jobs:
             --set-cloudsql-instances "${{ secrets.INSTANCE_CONNECTION_NAME }}" \
             --set-env-vars "DATABASE_URL=${{ steps.dburl.outputs.DATABASE_URL }},PYTHONUNBUFFERED=1,PYTHONPATH=/app" \
             --command "python" \
-            --args "-m","alembic","-c","alembic.ini","upgrade","head" \
+            --args "-m" \
+            --args "alembic" \
+            --args "-c" \
+            --args "alembic.ini" \
+            --args "upgrade" \
+            --args "head" \
             --max-retries 1 \
             --memory 512Mi \
-            --cpu 1
+            --cpu 1 \
+            --task-timeout 900s
 
       - name: Run DB Migration Job (execute & print logs)
         env:
