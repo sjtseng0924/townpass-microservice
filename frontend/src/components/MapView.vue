@@ -13,7 +13,7 @@ let flutterMsgHandler = null
 
 // ====== UI 狀態 ======
 const searchText = ref('')
-const selectedDistrict = ref('')    // "" = 全部（台北市）
+const selectedDistrict = ref('')   
 const showNearby = ref(true)
 const nearbyList = ref([])
 const lastSearchLonLat = ref(null)  // { lon, lat }：最近一次「搜尋中心」
@@ -29,7 +29,6 @@ const districtOptions = ref([...TPE_DISTRICTS])
 
 // ====== Mapbox 搜尋邊界限定「台北市」=====
 const TPE_CENTER = [121.5654, 25.0330]
-/** 台北市大致 bbox（西, 南, 東, 北） */
 const TPE_BBOX = '121.457,24.955,121.654,25.201'
 
 // ====== 資料集（點選可顯示/隱藏） ======
@@ -493,7 +492,7 @@ onBeforeUnmount(() => {
         v-model="searchText"
         @keyup.enter="goSearch"
         type="text"
-        placeholder="輸入台北市內的地點或地址（例如：台北101、永康街）"
+        placeholder="輸入台北市內的地點或地址"
         class="px-3 py-2 border rounded-md flex-1 min-w-[220px]"
       />
       <button @click="goSearch" class="px-3 py-2 rounded-md bg-blue-600 text-white">搜尋</button>
@@ -563,5 +562,4 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* 可視需要細調手機間距/字級 */
 </style>
