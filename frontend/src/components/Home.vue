@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import TopTabs from './TopTabs.vue'
 import { hello, echo, listUsers, createUser, listTestRecords, createTestRecord } from '@/service/api'
 
 const hi = ref(null)          // GET /api/hello 回傳
@@ -17,6 +18,7 @@ const newTestDescription = ref('A short description')
 const loading = ref(false)
 const error = ref('')
 const router = useRouter()
+const currentTab = ref('recommend')
 
 onMounted(async () => {
   try {
@@ -73,64 +75,73 @@ async function addTestRecord() {
   }
 }
 
-function goToMap() {
-  router.push('/map')
+function selectTab(tab) {
+  if (tab === 'recommend') {
+    currentTab.value = 'recommend'
+    if (router.currentRoute.value.path !== '/') {
+      router.push('/')
+    }
+    return
+  }
+
+  currentTab.value = 'map'
+  if (router.currentRoute.value.path !== '/map') {
+    router.push('/map')
+  }
 }
 </script>
 
 <template>
-  <section class="grid gap-4 max-w-[720px] mx-auto p-4">
-    <h1 class="text-3xl font-bold">Home</h1>
+  <section class="max-w-[720px] mx-auto p-4">
+    <TopTabs :active="currentTab" @select="selectTab" />
 
-    <div v-if="loading" class="text-gray-500">Loading…</div>
-    <div v-if="error" class="text-red-600">Error: {{ error }}</div>
+    <div v-if="currentTab === 'recommend'" class="grid gap-4 mt-4">
+      <h1 class="text-3xl font-bold">Home</h1>
 
-    <!-- 1) 測試 GET /api/hello -->
-    <article class="border border-gray-200 rounded-lg p-3">
-      <h3 class="font-semibold mb-2">GET /api/hello</h3>
-      <pre class="bg-gray-100 p-2 rounded overflow-auto">{{ hi }}</pre>
-    </article>
+      <div v-if="loading" class="text-gray-500">Loading…</div>
+      <div v-if="error" class="text-red-600">Error: {{ error }}</div>
 
-    <!-- 2) 測試 POST /api/echo（用來驗證 CORS） -->
-    <article class="border border-gray-200 rounded-lg p-3">
-      <h3 class="font-semibold mb-2">POST /api/echo</h3>
-      <div class="flex items-center gap-2">
-        <input v-model="echoMsg" placeholder="type a message" class="px-2 py-1 border border-gray-300 rounded" />
-        <button @click="sendEcho" class="px-3 py-1 border border-gray-400 rounded hover:border-indigo-500">Send</button>
-      </div>
-      <pre class="bg-gray-100 p-2 rounded mt-2 overflow-auto">{{ echoResp }}</pre>
-    </article>
+      <!-- 1) 測試 GET /api/hello -->
+      <article class="border border-gray-200 rounded-lg p-3">
+        <h3 class="font-semibold mb-2">GET /api/hello</h3>
+        <pre class="bg-gray-100 p-2 rounded overflow-auto">{{ hi }}</pre>
+      </article>
 
-    <!-- Mapbox 導覽 -->
-    <article class="border border-gray-200 rounded-lg p-3">
-      <h3 class="font-semibold mb-2">Map</h3>
-      <button @click="goToMap" class="px-3 py-1 border border-gray-400 rounded hover:border-indigo-500">前往地圖頁面</button>
-    </article>
+      <!-- 2) 測試 POST /api/echo（用來驗證 CORS） -->
+      <article class="border border-gray-200 rounded-lg p-3">
+        <h3 class="font-semibold mb-2">POST /api/echo</h3>
+        <div class="flex items-center gap-2">
+          <input v-model="echoMsg" placeholder="type a message" class="px-2 py-1 border border-gray-300 rounded" />
+          <button @click="sendEcho" class="px-3 py-1 border border-gray-400 rounded hover:border-indigo-500">Send</button>
+        </div>
+        <pre class="bg-gray-100 p-2 rounded mt-2 overflow-auto">{{ echoResp }}</pre>
+      </article>
 
-    <!-- 3) 測試 /api/users 清單 + 建立 -->
-    <article class="border border-gray-200 rounded-lg p-3">
-      <h3 class="font-semibold mb-2">Users</h3>
-      <div class="flex items-center gap-2">
-        <input v-model="newName" placeholder="name" class="px-2 py-1 border border-gray-300 rounded" />
-        <button @click="addUser" class="px-3 py-1 border border-gray-400 rounded hover:border-indigo-500">Add</button>
-      </div>
-      <ul class="mt-2 list-disc pl-6">
-        <li v-for="u in users" :key="u.id">{{ u.id }} — {{ u.name }}</li>
-      </ul>
-    </article>
+      <!-- 3) 測試 /api/users 清單 + 建立 -->
+      <article class="border border-gray-200 rounded-lg p-3">
+        <h3 class="font-semibold mb-2">Users</h3>
+        <div class="flex items-center gap-2">
+          <input v-model="newName" placeholder="name" class="px-2 py-1 border border-gray-300 rounded" />
+          <button @click="addUser" class="px-3 py-1 border border-gray-400 rounded hover:border-indigo-500">Add</button>
+        </div>
+        <ul class="mt-2 list-disc pl-6">
+          <li v-for="u in users" :key="u.id">{{ u.id }} — {{ u.name }}</li>
+        </ul>
+      </article>
 
-    <!-- 4) 測試 /api/test_records 清單 + 建立 -->
-    <article class="border border-gray-200 rounded-lg p-3">
-      <h3 class="font-semibold mb-2">Test Records</h3>
-      <div class="flex items-center flex-wrap gap-2">
-        <input v-model="newTestTitle" placeholder="title" class="flex-1 min-w-[200px] px-2 py-1 border border-gray-300 rounded" />
-        <input v-model="newTestDescription" placeholder="description" class="flex-[2] min-w-[200px] px-2 py-1 border border-gray-300 rounded" />
-        <button @click="addTestRecord" class="px-3 py-1 border border-gray-400 rounded hover:border-indigo-500">Add Test</button>
-      </div>
-      <ul class="mt-2 list-disc pl-6">
-        <li v-for="t in tests" :key="t.id">{{ t.id }} — <strong>{{ t.title }}</strong> — {{ t.description }}</li>
-      </ul>
-    </article>
+      <!-- 4) 測試 /api/test_records 清單 + 建立 -->
+      <article class="border border-gray-200 rounded-lg p-3">
+        <h3 class="font-semibold mb-2">Test Records</h3>
+        <div class="flex items-center flex-wrap gap-2">
+          <input v-model="newTestTitle" placeholder="title" class="flex-1 min-w-[200px] px-2 py-1 border border-gray-300 rounded" />
+          <input v-model="newTestDescription" placeholder="description" class="flex-[2] min-w-[200px] px-2 py-1 border border-gray-300 rounded" />
+          <button @click="addTestRecord" class="px-3 py-1 border border-gray-400 rounded hover:border-indigo-500">Add Test</button>
+        </div>
+        <ul class="mt-2 list-disc pl-6">
+          <li v-for="t in tests" :key="t.id">{{ t.id }} — <strong>{{ t.title }}</strong> — {{ t.description }}</li>
+        </ul>
+      </article>
+    </div>
   </section>
 </template>
 

@@ -1,11 +1,14 @@
 <script setup>
 import { onMounted, onBeforeUnmount, ref, createApp } from 'vue'
+import { useRouter } from 'vue-router'
 import mapboxgl from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import MapPopup from './map/MapPopup.vue'
+import TopTabs from './TopTabs.vue'
 
 const mapEl = ref(null)
 let map = null
+const router = useRouter()
 
 // ====== Flutter / GPS 互動 ======
 let pollTimer = null
@@ -39,6 +42,12 @@ const datasets = ref([
 
 // 快取：每個資料集 => { sourceId, layerIds, geo, bounds }
 const datasetCache = new Map()
+
+function handleTabSelect(tab) {
+  if (tab === 'recommend') {
+    router.push('/')
+  }
+}
 
 function computeBounds(geo) {
   const bounds = new mapboxgl.LngLatBounds()
@@ -486,6 +495,8 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="h-screen flex flex-col overflow-hidden">
+    <TopTabs active="map" @select="handleTabSelect" />
+
     <!-- 上排：輸入地址 + 搜尋 + 清除 -->
     <div class="flex items-center gap-2 py-2 px-2 flex-wrap">
       <input
@@ -495,14 +506,14 @@ onBeforeUnmount(() => {
         placeholder="輸入台北市內的地點或地址"
         class="px-3 py-2 border rounded-md flex-1 min-w-[220px]"
       />
-      <button @click="goSearch" class="px-3 py-2 rounded-md bg-blue-600 text-white">搜尋</button>
+      <button @click="goSearch" class="px-3 py-2 rounded-md bg-sky-600 text-white">搜尋</button>
       <button @click="clearSearch" class="px-3 py-2 rounded-md border">清除</button>
     </div>
 
     <!-- 下排：行政區選擇 + 圖層開關（僅影響顯示與 1km 清單） -->
     <div class="flex items-center gap-3 py-2 px-2 flex-wrap border-t">
       <select v-model="selectedDistrict" @change="applyDistrictFilter" class="px-3 py-2 border rounded-md">
-        <option value="">全部行政區（台北市）</option>
+        <option value="">請選擇行政區</option>
         <option v-for="d in districtOptions" :key="d" :value="d">{{ d }}</option>
       </select>
 
