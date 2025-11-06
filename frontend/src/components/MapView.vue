@@ -494,87 +494,87 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="h-screen flex flex-col overflow-hidden">
-    <TopTabs active="map" @select="handleTabSelect" />
+  <div class="bg-white min-h-screen">
+    <section class="mx-auto flex min-h-screen w-full max-w-[720px] flex-col px-4 pb-8">
+      <TopTabs active="map" @select="handleTabSelect" />
 
-    <!-- 上排：輸入地址 + 搜尋 + 清除 -->
-    <div class="flex items-center gap-2 py-2 px-2 flex-wrap">
-      <input
-        v-model="searchText"
-        @keyup.enter="goSearch"
-        type="text"
-        placeholder="輸入台北市內的地點或地址"
-        class="px-3 py-2 border rounded-md flex-1 min-w-[220px]"
-      />
-      <button @click="goSearch" class="px-3 py-2 rounded-md bg-sky-600 text-white">搜尋</button>
-      <button @click="clearSearch" class="px-3 py-2 rounded-md border">清除</button>
-    </div>
-
-    <!-- 下排：行政區選擇 + 圖層開關（僅影響顯示與 1km 清單） -->
-    <div class="flex items-center gap-3 py-2 px-2 flex-wrap border-t">
-      <select v-model="selectedDistrict" @change="applyDistrictFilter" class="px-3 py-2 border rounded-md">
-        <option value="">請選擇行政區</option>
-        <option v-for="d in districtOptions" :key="d" :value="d">{{ d }}</option>
-      </select>
-
-      <div class="flex items-center gap-4 flex-wrap">
-        <label v-for="ds in datasets" :key="ds.id" class="inline-flex items-center gap-2 text-sm">
+      <div class="mt-4 flex flex-1 flex-col gap-4">
+        <!-- 上排：輸入地址 + 搜尋 + 清除 -->
+        <div class="flex flex-wrap items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
           <input
-            type="checkbox"
-            v-model="ds.visible"
-            @change="() => { setDatasetVisibility(ds, ds.visible); computeNearbyForCurrentCenter() }"
+            v-model="searchText"
+            @keyup.enter="goSearch"
+            type="text"
+            placeholder="輸入台北市內的地點或地址"
+            class="flex-1 min-w-[220px] rounded-md border px-3 py-2"
           />
-          <span>{{ ds.name }}</span>
-        </label>
-      </div>
-    </div>
+          <button @click="goSearch" class="rounded-md bg-sky-600 px-3 py-2 text-white">搜尋</button>
+          <button @click="clearSearch" class="rounded-md border px-3 py-2">清除</button>
+        </div>
 
-    <!-- 地圖 -->
-    <div ref="mapEl" class="flex-1 min-h-0" />
+        <!-- 下排：行政區選擇 + 圖層開關（僅影響顯示與 1km 清單） -->
+        <div class="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+          <select v-model="selectedDistrict" @change="applyDistrictFilter" class="rounded-md border px-3 py-2">
+            <option value="">請選擇行政區</option>
+            <option v-for="d in districtOptions" :key="d" :value="d">{{ d }}</option>
+          </select>
 
-    <!-- 底部 1km 內清單 -->
-    <div class="w-full bg-white/90 border-t">
-      <button
-        class="w-full text-left px-4 py-3 font-medium flex items-center justify-between"
-        @click="showNearby = !showNearby"
-      >
-        <span>距中心點 1 公里內的據點（{{ nearbyList.length }}）</span>
-        <span class="text-sm text-gray-500">{{ showNearby ? '收合' : '展開' }}</span>
-      </button>
-      <div v-if="showNearby" class="max-h-64 overflow-auto px-4 pb-4">
-        <p v-if="!userLonLat && !lastSearchLonLat" class="text-sm text-gray-500">等待 GPS 定位中，或先進行一次搜尋。</p>
-        <ul v-else>
-          <li
-            v-for="(it, idx) in nearbyList"
-            :key="idx"
-            class="py-2 border-b flex items-center justify-between"
+          <div class="flex flex-wrap items-center gap-4 text-sm">
+            <label v-for="ds in datasets" :key="ds.id" class="inline-flex items-center gap-2">
+              <input
+                type="checkbox"
+                v-model="ds.visible"
+                @change="() => { setDatasetVisibility(ds, ds.visible); computeNearbyForCurrentCenter() }"
+              />
+              <span>{{ ds.name }}</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- 地圖 -->
+        <div ref="mapEl" class="flex-1 min-h-[360px] rounded-2xl border border-gray-200" />
+
+        <!-- 底部 1km 內清單 -->
+        <div class="rounded-2xl border border-gray-200 bg-white/95 shadow-sm">
+          <button
+            class="flex w-full items-center justify-between rounded-t-2xl px-4 py-3 text-left font-medium"
+            @click="showNearby = !showNearby"
           >
-            <div class="min-w-0">
-              <div class="font-medium truncate">{{ it.name }}</div>
-              <div class="text-xs text-gray-600 truncate">{{ it.addr }}</div>
-            </div>
-            <div class="flex items-center gap-3">
-              <div class="text-sm font-semibold whitespace-nowrap">{{ it.dist }} 公尺</div>
-              <button
-                class="px-2 py-1 text-xs rounded border"
-                @click="map && map.flyTo({ center: [it.lon, it.lat], zoom: 16 })"
+            <span>距中心點 1 公里內的據點（{{ nearbyList.length }}）</span>
+            <span class="text-sm text-gray-500">{{ showNearby ? '收合' : '展開' }}</span>
+          </button>
+          <div v-if="showNearby" class="max-h-64 overflow-auto px-4 pb-4">
+            <p v-if="!userLonLat && !lastSearchLonLat" class="text-sm text-gray-500">等待 GPS 定位中，或先進行一次搜尋。</p>
+            <ul v-else class="divide-y">
+              <li
+                v-for="(it, idx) in nearbyList"
+                :key="idx"
+                class="flex items-center justify-between py-2"
               >
-                前往
-              </button>
-            </div>
-          </li>
-          <li v-if="nearbyList.length === 0" class="py-3 text-sm text-gray-500">
-            1 公里內沒有符合條件的據點
-          </li>
-        </ul>
+                <div class="min-w-0">
+                  <div class="font-medium truncate">{{ it.name }}</div>
+                  <div class="truncate text-xs text-gray-600">{{ it.addr }}</div>
+                </div>
+                <div class="flex items-center gap-3">
+                  <div class="whitespace-nowrap text-sm font-semibold">{{ it.dist }} 公尺</div>
+                  <button
+                    class="rounded border px-2 py-1 text-xs"
+                    @click="map && map.flyTo({ center: [it.lon, it.lat], zoom: 16 })"
+                  >
+                    前往
+                  </button>
+                </div>
+              </li>
+              <li v-if="nearbyList.length === 0" class="py-3 text-sm text-gray-500">
+                1 公里內沒有符合條件的據點
+              </li>
+            </ul>
+          </div>
+        </div>
       </div>
-    </div>
-  </section>
+    </section>
+  </div>
 </template>
 
 <style scoped>
-  :global(html, body, #app) {
-    height: 100%;
-    overflow: hidden;
-  }
 </style>
