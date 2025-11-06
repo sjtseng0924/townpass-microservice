@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, onBeforeUnmount, ref, createApp } from 'vue'
+import { onMounted, onBeforeUnmount, ref, createApp, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import mapboxgl from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css'
@@ -17,7 +17,7 @@ let flutterMsgHandler = null
 // ====== UI 狀態 ======
 const searchText = ref('')
 const selectedDistrict = ref('')   
-const showNearby = ref(true)
+const showNearby = ref(false)
 const nearbyList = ref([])
 const lastSearchLonLat = ref(null)  // { lon, lat }：最近一次「搜尋中心」
 const userLonLat = ref(null)        // { lon, lat }：最新「GPS 定位」
@@ -154,6 +154,11 @@ function toggleDataset(ds) {
   setDatasetVisibility(ds, ds.visible)
   computeNearbyForCurrentCenter()
 }
+
+watch(showNearby, async () => {
+  await nextTick()
+  map?.resize()
+})
 
 // ===== 使用者定位 =====
 function ensureUserLayer() {
@@ -445,6 +450,7 @@ function clearSearch() {
 
 // ===== Map 初始化 =====
 onMounted(async () => {
+  await nextTick()
   const token = import.meta.env.VITE_MAPBOXTOKEN
   const styleUrl = 'mapbox://styles/mapbox/streets-v12'
   if (!token) {
@@ -479,6 +485,7 @@ onMounted(async () => {
       }
 
       startPollingFlutter(1000)
+      map.resize()
     } catch (err) {
       console.warn('Failed to load datasets:', err)
     }
@@ -501,10 +508,10 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="bg-white min-h-screen">
-    <section class="mx-auto flex min-h-screen w-full max-w-[720px] flex-col px-4 pb-8">
+    <section class="mx-auto flex h-[100dvh] w-full max-w-[720px] flex-col px-4 pb-6 pt-4 overflow-hidden">
       <TopTabs active="map" @select="handleTabSelect" />
 
-      <div class="mt-4 flex flex-1 flex-col gap-3">
+      <div class="mt-4 flex flex-1 flex-col gap-3 overflow-hidden">
         <div class="flex w-full flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
           <div class="flex flex-1 items-center gap-2">
             <input
@@ -544,44 +551,54 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- 地圖 -->
-        <div ref="mapEl" class="flex-1 min-h-[340px] rounded-2xl border border-gray-200" />
+        <!-- 地圖與附近列表 -->
+        <div class="relative flex-1 overflow-hidden">
+          <div ref="mapEl" class="h-full w-full rounded-2xl border border-gray-200" />
 
-        <!-- 底部 1km 內清單 -->
-        <div class="rounded-2xl border border-gray-200 bg-white/95 shadow-sm">
-          <button
-            class="flex w-full items-center justify-between rounded-t-2xl px-4 py-3 text-left font-medium"
-            @click="showNearby = !showNearby"
-          >
-            <span>距中心點 1 公里內的據點（{{ nearbyList.length }}）</span>
-            <span class="text-sm text-gray-500">{{ showNearby ? '收合' : '展開' }}</span>
-          </button>
-          <div v-if="showNearby" class="max-h-72 overflow-auto px-4 pb-4">
-            <p v-if="!userLonLat && !lastSearchLonLat" class="text-sm text-gray-500">等待 GPS 定位中，或先進行一次搜尋。</p>
-            <ul v-else class="divide-y">
-              <li
-                v-for="(it, idx) in nearbyList"
-                :key="idx"
-                class="flex items-center justify-between py-2"
+          <div class="pointer-events-none absolute inset-x-0 bottom-0 px-2 pb-2">
+            <div v-if="showNearby" class="pointer-events-auto w-full rounded-2xl border border-gray-200 bg-white/95 shadow-sm">
+              <button
+                class="flex w-full items-center justify-between rounded-t-2xl px-4 py-3 text-left font-medium"
+                @click="showNearby = false"
               >
-                <div class="min-w-0">
-                  <div class="font-medium truncate">{{ it.name }}</div>
-                  <div class="truncate text-xs text-gray-600">{{ it.addr }}</div>
-                </div>
-                <div class="flex items-center gap-3">
-                  <div class="whitespace-nowrap text-sm font-semibold">{{ it.dist }} 公尺</div>
-                  <button
-                    class="rounded border px-2 py-1 text-xs"
-                    @click="map && map.flyTo({ center: [it.lon, it.lat], zoom: 16 })"
+                <span>距中心點 1 公里內的據點（{{ nearbyList.length }}）</span>
+                <span class="text-sm text-gray-500">收合</span>
+              </button>
+              <div class="max-h-72 overflow-auto px-4 pb-4">
+                <p v-if="!userLonLat && !lastSearchLonLat" class="text-sm text-gray-500">等待 GPS 定位中，或先進行一次搜尋。</p>
+                <ul v-else class="divide-y">
+                  <li
+                    v-for="(it, idx) in nearbyList"
+                    :key="idx"
+                    class="flex items-center justify-between py-2"
                   >
-                    前往
-                  </button>
-                </div>
-              </li>
-              <li v-if="nearbyList.length === 0" class="py-3 text-sm text-gray-500">
-                1 公里內沒有符合條件的據點
-              </li>
-            </ul>
+                    <div class="min-w-0">
+                      <div class="font-medium truncate">{{ it.name }}</div>
+                      <div class="truncate text-xs text-gray-600">{{ it.addr }}</div>
+                    </div>
+                    <div class="flex items-center gap-3">
+                      <div class="whitespace-nowrap text-sm font-semibold">{{ it.dist }} 公尺</div>
+                      <button
+                        class="rounded border px-2 py-1 text-xs"
+                        @click="map && map.flyTo({ center: [it.lon, it.lat], zoom: 16 })"
+                      >
+                        前往
+                      </button>
+                    </div>
+                  </li>
+                  <li v-if="nearbyList.length === 0" class="py-3 text-sm text-gray-500">
+                    1 公里內沒有符合條件的據點
+                  </li>
+                </ul>
+              </div>
+            </div>
+            <button
+              v-else
+              class="pointer-events-auto mx-auto flex items-center gap-2 rounded-full bg-white/95 px-4 py-2 text-sm font-medium shadow"
+              @click="showNearby = true"
+            >
+              查看附近 1 公里內據點（{{ nearbyList.length }}）
+            </button>
           </div>
         </div>
       </div>

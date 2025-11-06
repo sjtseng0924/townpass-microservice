@@ -92,7 +92,7 @@ function selectTab(tab) {
 </script>
 
 <template>
-  <section class="max-w-[720px] mx-auto p-4">
+  <section class="mx-auto max-w-[720px] px-4 pt-4 pb-6">
     <TopTabs :active="currentTab" @select="selectTab" />
 
     <div v-if="currentTab === 'recommend'" class="grid gap-4 mt-4">
