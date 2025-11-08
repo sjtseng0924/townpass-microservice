@@ -2740,13 +2740,15 @@ onBeforeUnmount(() => {
                       <li
                         v-for="(it, idx) in routeMatchList"
                         :key="idx"
-                        class="flex items-center justify-between py-2"
+                        class="flex items-center py-2"
                       >
-                        <div class="min-w-0">
+                        <!-- 左側內容: 固定 65%，超出使用 ellipsis -->
+                        <div class="min-w-0 w-[65%]">
                           <div class="font-medium truncate">{{ it.name }}</div>
                           <div class="truncate text-xs text-gray-600">{{ it.addr }}</div>
                         </div>
-                        <div class="flex items-center gap-3">
+                        <!-- 右側行為區: 固定 35%，靠右對齊 -->
+                        <div class="w-[35%] flex items-center justify-end gap-3">
                           <div class="whitespace-nowrap text-sm font-semibold">{{ it.dist }} 公尺</div>
                           <button
                             class="rounded border px-2 py-1 text-xs hover:bg-gray-100 transition-colors"
@@ -2812,13 +2814,15 @@ onBeforeUnmount(() => {
                       <li
                         v-for="(it, idx) in roadMatchList"
                         :key="idx"
-                        class="flex items-center justify-between py-2"
+                        class="flex items-center py-2"
                       >
-                        <div class="min-w-0">
+                        <!-- 左側內容: 固定 65%，超出使用 ellipsis -->
+                        <div class="min-w-0 w-[65%]">
                           <div class="font-medium truncate">{{ it.name }}</div>
                           <div class="truncate text-xs text-gray-600">{{ it.addr }}</div>
                         </div>
-                        <div class="flex items-center gap-3">
+                        <!-- 右側行為區: 固定 35%，靠右對齊 -->
+                        <div class="w-[35%] flex items-center justify-end gap-3">
                           <div class="whitespace-nowrap text-sm font-semibold">{{ it.dist }} 公尺</div>
                           <button
                             class="rounded border px-2 py-1 text-xs hover:bg-gray-100 transition-colors"
@@ -2886,13 +2890,15 @@ onBeforeUnmount(() => {
                     <li
                       v-for="(it, idx) in nearbyList"
                       :key="idx"
-                      class="flex items-center justify-between py-2"
+                      class="flex items-center py-2"
                     >
-                      <div class="min-w-0">
+                      <!-- 左側內容: 固定 65%，超出使用 ellipsis -->
+                      <div class="min-w-0 w-[65%]">
                         <div class="font-medium truncate">{{ it.name }}</div>
                         <div class="truncate text-xs text-gray-600">{{ it.addr }}</div>
                       </div>
-                      <div class="flex items-center gap-3">
+                      <!-- 右側行為區: 固定 35%，靠右對齊 -->
+                      <div class="w-[35%] flex items-center justify-end gap-3">
                         <div class="whitespace-nowrap text-sm font-semibold">{{ it.dist }} 公尺</div>
                         <button
                           class="rounded border px-2 py-1 text-xs hover:bg-gray-100 transition-colors"
