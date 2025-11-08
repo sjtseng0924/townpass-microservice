@@ -1,60 +1,45 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:workmanager/workmanager.dart';
 import 'notification_service.dart';
 
-/// 背景任務的唯一名稱
-const String _taskName = 'checkConstructionNearFavorites';
-
-/// WorkManager 背景任務回調函式（必須是頂層函式或靜態方法）
-@pragma('vm:entry-point')
-void backgroundTaskDispatcher() {
-  Workmanager().executeTask((task, inputData) async {
-    try {
-      await BackgroundNotificationService._checkAndNotify();
-      return Future.value(true);
-    } catch (e) {
-      print('[BackgroundTask] Error: $e');
-      return Future.value(false);
-    }
-  });
-}
-
+/// 背景通知服務（使用 Android AlarmManager 實現週期檢查）
+/// 注意：由於 Flutter 限制，真正的背景任務需要在 Android 原生層實作
+/// 這裡提供基本的檢查邏輯，供前景或原生層呼叫
 class BackgroundNotificationService {
-  /// 初始化 WorkManager（僅在 Android 上有效）
+  /// 初始化服務（預留給未來擴展）
   static Future<void> initialize() async {
-    await Workmanager().initialize(
-      backgroundTaskDispatcher,
-      isInDebugMode: false, // 設為 true 可在開發時看到更多日誌
-    );
+    // Android AlarmManager 需要在原生層設定
+    // 這裡只做 Dart 層的初始化
+    print('[BackgroundNotificationService] Initialized');
   }
 
-  /// 啟動週期性背景任務（每 5 分鐘）
+  /// 啟動週期性檢查（發送訊息給原生層）
   static Future<void> startPeriodicCheck() async {
-    await Workmanager().registerPeriodicTask(
-      _taskName,
-      _taskName,
-      frequency: const Duration(minutes: 15), // Android 最小週期為 15 分鐘，測試可用一次性任務
-      constraints: Constraints(
-        networkType: NetworkType.connected, // 需要網路才執行
-      ),
-      existingWorkPolicy: ExistingWorkPolicy.replace,
-    );
-    print('[BackgroundNotificationService] Periodic task registered');
+    print('[BackgroundNotificationService] Start periodic check requested');
+    // 實際的週期任務會在原生 Android 層透過 AlarmManager 實作
+    // 這裡只做標記，表示使用者想要背景通知
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('background_notification_enabled', true);
   }
 
-  /// 停止週期性背景任務
+  /// 停止週期性檢查
   static Future<void> stopPeriodicCheck() async {
-    await Workmanager().cancelByUniqueName(_taskName);
-    print('[BackgroundNotificationService] Periodic task cancelled');
+    print('[BackgroundNotificationService] Stop periodic check requested');
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('background_notification_enabled', false);
   }
 
-  /// 背景任務核心邏輯：檢查有啟用通知的收藏，並發送施工警報
+  /// 立即執行一次檢查（供測試或前景呼叫）
+  static Future<void> executeImmediately() async {
+    print('[BackgroundNotificationService] Execute check immediately');
+    await _checkAndNotify();
+  }
+
+  /// 檢查邏輯：讀取收藏與通知設定，發送施工警報
   static Future<void> _checkAndNotify() async {
     print('[BackgroundTask] Starting check...');
 
-    // 1. 讀取收藏與通知設定
     final prefs = await SharedPreferences.getInstance();
     final favoritesJson = prefs.getString('mapFavorites') ?? '[]';
     final notificationsJson = prefs.getString('placeNotifications') ?? '{}';
@@ -80,22 +65,11 @@ class BackgroundNotificationService {
       return;
     }
 
-    // 2. 取得目前位置（可選，若需要基於使用者目前位置的邏輯）
-    // Position? currentPosition;
-    // try {
-    //   currentPosition = await Geolocator.getCurrentPosition(
-    //     desiredAccuracy: LocationAccuracy.medium,
-    //   ).timeout(const Duration(seconds: 10));
-    // } catch (e) {
-    //   print('[BackgroundTask] Failed to get location: $e');
-    // }
-
-    // 3. 逐一檢查每個有啟用通知的收藏
+    // 檢查每個有啟用通知的收藏
     for (final fav in favorites) {
       final placeId = fav['id'];
       if (placeId == null) continue;
 
-      // 只處理有啟用通知的收藏
       final enabled = notifications[placeId] == true;
       if (!enabled) continue;
 
@@ -126,18 +100,5 @@ class BackgroundNotificationService {
     }
 
     print('[BackgroundTask] Check completed');
-  }
-
-  /// 供測試用：立即執行一次背景檢查（不需等 15 分鐘）
-  static Future<void> executeImmediately() async {
-    await Workmanager().registerOneOffTask(
-      'checkConstructionNow',
-      _taskName,
-      constraints: Constraints(
-        networkType: NetworkType.connected,
-      ),
-      existingWorkPolicy: ExistingWorkPolicy.replace,
-    );
-    print('[BackgroundNotificationService] One-off task registered');
   }
 }
