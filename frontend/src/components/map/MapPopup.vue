@@ -1,16 +1,68 @@
 <script setup>
+import { computed } from 'vue'
+import fieldMapping from '@/config/fieldMapping.json'
+
 const props = defineProps({
-  properties: { type: Object, required: true }
+  properties: { type: Object, required: true },
+  datasetId: { type: String, default: 'attraction' }
+})
+
+// 根據資料集類型取得對應的欄位映射
+const fieldConfig = computed(() => {
+  return fieldMapping[props.datasetId] || fieldMapping.attraction
+})
+
+// 格式化值的顯示
+function formatValue(value) {
+  if (value === null || value === undefined) return '-'
+  if (typeof value === 'boolean') return value ? '是' : '否'
+  if (typeof value === 'number') {
+    // 如果是小數，保留一位小數
+    if (value % 1 !== 0) return value.toFixed(1)
+    return value.toString()
+  }
+  // 如果是 JSON 字串，嘗試解析
+  if (typeof value === 'string' && value.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(value)
+      if (parsed.roadname && parsed.distance_m) {
+        return `${parsed.roadname} (${parsed.distance_m} 公尺)`
+      }
+      return JSON.stringify(parsed, null, 2)
+    } catch {
+      return value
+    }
+  }
+  return value
+}
+
+// 過濾並排序要顯示的欄位
+const displayFields = computed(() => {
+  const config = fieldConfig.value
+  const fields = []
+  
+  // 只顯示配置檔案中定義的欄位
+  for (const [displayName, fieldKey] of Object.entries(config)) {
+    if (props.properties.hasOwnProperty(fieldKey)) {
+      fields.push({
+        displayName,
+        fieldKey,
+        value: props.properties[fieldKey]
+      })
+    }
+  }
+  
+  return fields
 })
 </script>
 
 <template>
   <div class="min-w-[240px] max-w-[320px] p-2">
-    <div v-if="Object.keys(properties).length === 0">無屬性資料</div>
+    <div v-if="displayFields.length === 0">無屬性資料</div>
     <div v-else class="space-y-1">
-      <div v-for="(val, key) in properties" :key="key" class="flex gap-2">
-        <div class="min-w-[88px] text-gray-500">{{ key }}：</div>
-        <div class="text-gray-900 wrap-break-words">{{ val }}</div>
+      <div v-for="field in displayFields" :key="field.fieldKey" class="flex gap-2">
+        <div class="min-w-[88px] text-gray-500">{{ field.displayName }}：</div>
+        <div class="text-gray-900 wrap-break-words">{{ formatValue(field.value) }}</div>
       </div>
     </div>
   </div>

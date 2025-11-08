@@ -67,7 +67,7 @@ function computeBounds(geo) {
   return bounds
 }
 
-function attachPopupInteraction(layerId) {
+function attachPopupInteraction(layerId, datasetId) {
   map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer' })
   map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = '' })
   map.on('click', layerId, (e) => {
@@ -75,7 +75,7 @@ function attachPopupInteraction(layerId) {
     if (!feature) return
     const props = feature.properties || {}
     const container = document.createElement('div')
-    const app = createApp(MapPopup, { properties: props })
+    const app = createApp(MapPopup, { properties: props, datasetId: datasetId })
     app.mount(container)
     const popup = new mapboxgl.Popup({ offset: 8 })
       .setLngLat(e.lngLat)
@@ -98,8 +98,9 @@ function showNearbyItemPopup(item) {
   
   // 創建並顯示 popup
   const props = item.props || {}
+  const datasetId = item.dsid || 'attraction' // 從 item 中取得資料集 ID
   const container = document.createElement('div')
-  const app = createApp(MapPopup, { properties: props })
+  const app = createApp(MapPopup, { properties: props, datasetId: datasetId })
   app.mount(container)
   
   const popup = new mapboxgl.Popup({ offset: 8 })
@@ -135,7 +136,7 @@ async function ensureDatasetLoaded(ds) {
       layout: { visibility: ds.visible ? 'visible' : 'none' }
     })
     layerIds.push(lid)
-    attachPopupInteraction(lid)
+    attachPopupInteraction(lid, ds.id)
   } else if (geomType.includes('Line')) {
     const lid = `${ds.id}-lines`
     map.addLayer({
@@ -146,7 +147,7 @@ async function ensureDatasetLoaded(ds) {
       layout: { visibility: ds.visible ? 'visible' : 'none' }
     })
     layerIds.push(lid)
-    attachPopupInteraction(lid)
+    attachPopupInteraction(lid, ds.id)
   } else {
     const fillId = `${ds.id}-fill`
     const outlineId = `${ds.id}-outline`
@@ -165,7 +166,7 @@ async function ensureDatasetLoaded(ds) {
       layout: { visibility: ds.visible ? 'visible' : 'none' }
     })
     layerIds.push(fillId, outlineId)
-    attachPopupInteraction(fillId)
+    attachPopupInteraction(fillId, ds.id)
   }
 
   datasetCache.set(ds.id, { sourceId, layerIds, geo, bounds: computeBounds(geo) })
