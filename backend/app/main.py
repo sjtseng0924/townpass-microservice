@@ -188,7 +188,6 @@ origins = [
     "http://localhost:8080",
     "https://townpass-microservice.web.app",
     "https://townpass-microservice.firebaseapp.com",
-    "https://townpass-microservice--god-shield-zbq1etlw.web.app",
 ]
 
 app.add_middleware(
