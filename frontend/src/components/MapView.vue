@@ -85,6 +85,31 @@ function attachPopupInteraction(layerId) {
   })
 }
 
+// 顯示附近列表項目的 popup
+function showNearbyItemPopup(item) {
+  if (!map || !item) return
+  
+  // 先關閉現有的 popup
+  const existingPopups = document.querySelectorAll('.mapboxgl-popup')
+  existingPopups.forEach(p => p.remove())
+  
+  // 飛到該位置
+  map.flyTo({ center: [item.lon, item.lat], zoom: 16 })
+  
+  // 創建並顯示 popup
+  const props = item.props || {}
+  const container = document.createElement('div')
+  const app = createApp(MapPopup, { properties: props })
+  app.mount(container)
+  
+  const popup = new mapboxgl.Popup({ offset: 8 })
+    .setLngLat([item.lon, item.lat])
+    .setDOMContent(container)
+    .addTo(map)
+  
+  popup.on('close', () => app.unmount())
+}
+
 async function ensureDatasetLoaded(ds) {
   if (!map || datasetCache.has(ds.id)) return
   const geo = await fetch(ds.url).then(r => r.json())
@@ -822,10 +847,10 @@ onBeforeUnmount(() => {
                     <div class="flex items-center gap-3">
                       <div class="whitespace-nowrap text-sm font-semibold">{{ it.dist }} 公尺</div>
                       <button
-                        class="rounded border px-2 py-1 text-xs"
-                        @click="map && map.flyTo({ center: [it.lon, it.lat], zoom: 16 })"
+                        class="rounded border px-2 py-1 text-xs hover:bg-gray-100 transition-colors"
+                        @click="showNearbyItemPopup(it)"
                       >
-                        前往
+                        詳細資訊
                       </button>
                     </div>
                   </li>
