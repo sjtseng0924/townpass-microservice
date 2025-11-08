@@ -52,7 +52,7 @@ jobs:
           if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
             echo "channel=live" >> "$GITHUB_OUTPUT"
           elif [[ "${GITHUB_REF}" == "refs/heads/god_shield" ]]; then
-            echo "channel=god_shield" >> "$GITHUB_OUTPUT"
+            echo "channel=god-shield" >> "$GITHUB_OUTPUT"
           else
             echo "Unsupported branch ${GITHUB_REF}"
             exit 1
