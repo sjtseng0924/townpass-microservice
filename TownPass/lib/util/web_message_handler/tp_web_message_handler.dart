@@ -53,6 +53,26 @@ class UserinfoWebMessageHandler extends TPWebMessageHandler {
   }
 }
 
+class GetUserIdWebMessageHandler extends TPWebMessageHandler {
+  @override
+  String get name => 'get_user_id';
+
+  @override
+  Future<void> handle({
+    required Object? message,
+    required WebUri? sourceOrigin,
+    required bool isMainFrame,
+    required onReply,
+  }) async {
+    final account = Get.find<AccountService>().account;
+    // Account.id 是 UUID 字符串，直接返回
+    final String userId = account?.id ?? '';
+    onReply?.call(replyWebMessage(
+      data: {'user_id': userId},
+    ));
+  }
+}
+
 class LaunchMapWebMessageHandler extends TPWebMessageHandler {
   @override
   String get name => 'launch_map';
