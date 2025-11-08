@@ -6,7 +6,7 @@ import 'mapbox-gl/dist/mapbox-gl.css'
 import MapPopup from './map/MapPopup.vue'
 import TopTabs from './TopTabs.vue'
 import riskIconUrl from '../assets/icons/risk-icon.svg'
-
+import { suggestRoadSegments, fetchRoadSegmentsByName } from '@/service/api'
 const mapEl = ref(null)
 let map = null
 const router = useRouter()
@@ -14,9 +14,13 @@ const router = useRouter()
 // ====== Flutter / GPS 互動 ======
 let pollTimer = null
 let flutterMsgHandler = null
+let latestRoadSuggestionToken = 0
+let skipNextRoadSuggestionFetch = false
 
 // ====== UI 狀態 ======
+const searchMode = ref('place')      // 'place' | 'road'
 const searchText = ref('')
+const roadSearchText = ref('')
 // 行政區篩選已移除，改用資料集顯示切換
 const selectedDistrict = ref('')   // 保留但不再顯示 UI（若未來需要可再啟用）
 const datasetFilter = ref('all')   // 'all' | 'attraction' | 'construction' | 'narrow_street'
@@ -28,6 +32,10 @@ const lastSearchLonLat = ref(null)  // { lon, lat }：最近一次「搜尋中�
 const userLonLat = ref(null)        // { lon, lat }：最新「GPS 定位」
 const originMode = ref('gps')       // 'gps' | 'search'
 const showSettingsPanel = ref(false) // 設定齒輪彈窗開關
+const roadSuggestions = ref([])
+const showRoadSuggestions = ref(false)
+const isFetchingRoadSuggestions = ref(false)
+const isSearchingRoad = ref(false)
 
 // （行政區清單已不再顯示）
 const TPE_DISTRICTS = []
@@ -37,13 +45,17 @@ const districtOptions = ref([])
 const TPE_CENTER = [121.5654, 25.0330]
 const TPE_BBOX = '121.457,24.955,121.654,25.201'
 
-// ====== 資料集（全部顯示） ======
 const API_BASE = import.meta.env.VITE_API_BASE || ''
+
+// ====== 資料集（全部顯示） ======
 const datasets = ref([
   { id: 'attraction', name: '景點', url: '/mapData/attraction_tpe.geojson', color: '#f59e0b', outline: '#92400e', visible: true, includeNearby: true },
   { id: 'construction', name: '施工地點', url: `${API_BASE}/api/construction/geojson`, color: '#ef4444', outline: '#7f1d1d', visible: true, includeNearby: true },
   { id: 'narrow_street', name: '巷弄線圖', url: '/mapData/fire_narrow_street.geojson', color: '#64748b', outline: '#475569', visible: true, includeNearby: false },
 ])
+
+const ROAD_SEARCH_SOURCE_ID = 'road-search'
+const ROAD_SEARCH_LAYER_ID = 'road-search-lines'
 
 // 快取：每個資料集 => { sourceId, layerIds, geo, bounds }
 const datasetCache = new Map()
@@ -228,15 +240,124 @@ function toggleDataset(ds) {
   computeNearbyForCurrentCenter()
 }
 
+function ensureRoadSearchLayer() {
+  if (!map) return
+  if (!map.getSource(ROAD_SEARCH_SOURCE_ID)) {
+    map.addSource(ROAD_SEARCH_SOURCE_ID, {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] }
+    })
+  }
+  if (!map.getLayer(ROAD_SEARCH_LAYER_ID)) {
+    map.addLayer({
+      id: ROAD_SEARCH_LAYER_ID,
+      type: 'line',
+      source: ROAD_SEARCH_SOURCE_ID,
+      paint: {
+        'line-color': '#2563eb',
+        'line-width': 5,
+        'line-opacity': 0.9
+      }
+    })
+    attachPopupInteraction(ROAD_SEARCH_LAYER_ID, 'road_search')
+  }
+}
+
+function setRoadSearchData(featureCollection, presetBounds = null) {
+  if (!map) return
+  ensureRoadSearchLayer()
+  const src = map.getSource(ROAD_SEARCH_SOURCE_ID)
+  if (!src) return
+  src.setData(featureCollection || { type: 'FeatureCollection', features: [] })
+
+  const bounds = presetBounds || computeBounds(featureCollection || { features: [] })
+  if (bounds && !bounds.isEmpty()) {
+    map.fitBounds(bounds, { padding: 60, maxZoom: 17 })
+  }
+  return bounds
+}
+
+function clearRoadSearchData() {
+  if (!map) return
+  const src = map.getSource(ROAD_SEARCH_SOURCE_ID)
+  if (src) {
+    src.setData({ type: 'FeatureCollection', features: [] })
+  }
+}
+
 watch(showNearby, async () => {
   await nextTick()
   map?.resize()
+})
+
+watch(searchMode, (mode) => {
+  if (mode === 'place') {
+    roadSearchText.value = ''
+    roadSuggestions.value = []
+    showRoadSuggestions.value = false
+    clearRoadSearchData()
+  } else {
+    searchText.value = ''
+  }
+})
+
+watch(roadSearchText, async (value) => {
+  if (searchMode.value !== 'road') return
+  if (skipNextRoadSuggestionFetch) {
+    skipNextRoadSuggestionFetch = false
+    return
+  }
+  const keyword = value.trim()
+  if (!keyword) {
+    roadSuggestions.value = []
+    showRoadSuggestions.value = false
+    return
+  }
+
+  const token = ++latestRoadSuggestionToken
+  isFetchingRoadSuggestions.value = true
+  try {
+    const items = await suggestRoadSegments(keyword)
+    if (token === latestRoadSuggestionToken) {
+      roadSuggestions.value = items
+      showRoadSuggestions.value = items.length > 0
+    }
+  } catch (err) {
+    if (token === latestRoadSuggestionToken) {
+      console.warn('Failed to fetch road suggestions', err)
+      roadSuggestions.value = []
+      showRoadSuggestions.value = false
+    }
+  } finally {
+    if (token === latestRoadSuggestionToken) {
+      isFetchingRoadSuggestions.value = false
+    }
+  }
 })
 
 const selectedPlaceSaved = computed(() => {
   if (!selectedPlace.value?.id) return false
   return favorites.value.some((f) => f.id === selectedPlace.value.id)
 })
+
+function selectRoadSuggestion(name) {
+  skipNextRoadSuggestionFetch = true
+  roadSearchText.value = name
+  showRoadSuggestions.value = false
+}
+
+function openRoadSuggestionDropdown() {
+  if (searchMode.value !== 'road') return
+  if (roadSuggestions.value.length > 0) {
+    showRoadSuggestions.value = true
+  }
+}
+
+function closeRoadSuggestionDropdown() {
+  setTimeout(() => {
+    showRoadSuggestions.value = false
+  }, 150)
+}
 
 function readFavoritesFromStorage() {
   if (typeof window === 'undefined') return []
@@ -319,7 +440,14 @@ async function toggleSelectedPlaceFavorite() {
 }
 
 function clearSearchText() {
-  searchText.value = ''
+  if (searchMode.value === 'road') {
+    roadSearchText.value = ''
+    roadSuggestions.value = []
+    showRoadSuggestions.value = false
+    clearRoadSearchData()
+  } else {
+    searchText.value = ''
+  }
 }
 
 function centerOnUserLocation() {
@@ -773,7 +901,54 @@ async function geocodePlaceInTaipei(q) {
 }
 
 // ===== 搜尋與清除 =====
+async function performRoadSearch() {
+  const kw = (roadSearchText.value || '').trim()
+  if (!kw) return
+
+  isSearchingRoad.value = true
+  try {
+    const result = await fetchRoadSegmentsByName(kw)
+    showRoadSuggestions.value = false
+    const features = Array.isArray(result?.features) ? result.features.filter((f) => f?.geometry) : []
+    if (features.length === 0) {
+      clearRoadSearchData()
+      alert('找不到符合的道路，請確認名稱是否正確')
+      return
+    }
+
+    const collection = {
+      type: 'FeatureCollection',
+      features: features.map((f) => ({
+        type: 'Feature',
+        properties: { ...(f.properties || {}), dataset: 'road_search' },
+        geometry: f.geometry,
+      })),
+    }
+
+    const bounds = computeBounds(collection)
+    const fittedBounds = setRoadSearchData(collection, bounds)
+    clearSearchMarker()
+    selectedPlace.value = null
+    originMode.value = 'search'
+    if (fittedBounds && !fittedBounds.isEmpty()) {
+      const center = fittedBounds.getCenter()
+      lastSearchLonLat.value = { lon: center.lng, lat: center.lat }
+      computeNearby(center.lng, center.lat)
+    }
+  } catch (err) {
+    console.warn('Failed to search road segments', err)
+    alert('搜尋道路資料時發生錯誤，請稍後再試')
+  } finally {
+    isSearchingRoad.value = false
+  }
+}
+
 async function goSearch() {
+  if (searchMode.value === 'road') {
+    await performRoadSearch()
+    return
+  }
+
   // 行政區篩選已移除；改為資料集顯示選單（不需於搜尋時套用）
 
   const kw = (searchText.value || '').trim()
@@ -832,15 +1007,30 @@ function pickSelectedPlace({ lon, lat, place, addr }) {
 }
 
 function clearSearch() {
-  searchText.value = ''
-  lastSearchLonLat.value = null
-  originMode.value = 'gps'
-  clearSearchMarker()
-  selectedPlace.value = null
-  // 回到 GPS 並以 GPS 為中心重新計算
-  const c = userLonLat.value || { lon: TPE_CENTER[0], lat: TPE_CENTER[1] }
-  map.flyTo({ center: [c.lon, c.lat], zoom: Math.max(map.getZoom() ?? 0, 14) })
-  computeNearby(c.lon, c.lat)
+  if (searchMode.value === 'road') {
+    roadSearchText.value = ''
+    roadSuggestions.value = []
+    showRoadSuggestions.value = false
+    clearRoadSearchData()
+    lastSearchLonLat.value = null
+    originMode.value = 'gps'
+    selectedPlace.value = null
+    const c = userLonLat.value || { lon: TPE_CENTER[0], lat: TPE_CENTER[1] }
+    if (map) {
+      map.flyTo({ center: [c.lon, c.lat], zoom: Math.max(map.getZoom() ?? 0, 14) })
+    }
+    computeNearby(c.lon, c.lat)
+  } else {
+    searchText.value = ''
+    lastSearchLonLat.value = null
+    originMode.value = 'gps'
+    clearSearchMarker()
+    selectedPlace.value = null
+    // 回到 GPS 並以 GPS 為中心重新計算
+    const c = userLonLat.value || { lon: TPE_CENTER[0], lat: TPE_CENTER[1] }
+    map.flyTo({ center: [c.lon, c.lat], zoom: Math.max(map.getZoom() ?? 0, 14) })
+    computeNearby(c.lon, c.lat)
+  }
 }
 
 // ===== Map 初始化 =====
@@ -869,6 +1059,7 @@ onMounted(async () => {
 
   map.on('load', async () => {
     try {
+      ensureRoadSearchLayer()
       for (const ds of datasets.value) await ensureDatasetLoaded(ds)
       ensureUserLayer()
       ensureSearchMarkerLayer()
@@ -920,36 +1111,79 @@ onBeforeUnmount(() => {
       <div class="mt-3 flex flex-1 flex-col overflow-hidden">
         <!-- 搜尋列 -->
         <div class="relative z-10 mb-3 flex w-full items-center">
-          <div class="relative flex flex-1 items-center">
-            <input
-              v-model="searchText"
-              @keyup.enter="goSearch"
-              type="text"
-              placeholder="輸入地點或地址"
-              class="w-full rounded-full border border-gray-300 bg-white pl-4 pr-20 py-2.5 text-sm shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
-            />
-            <div class="absolute right-2 flex items-center gap-1">
-              <button
-                v-if="searchText"
-                @click="clearSearchText"
-                type="button"
-                class="flex h-7 w-7 items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-                title="清除輸入"
+          <div class="flex flex-1 items-center gap-2">
+            <select
+              v-model="searchMode"
+              class="h-11 w-28 rounded-full border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
+            >
+              <option value="place">地點</option>
+              <option value="road">道路</option>
+            </select>
+
+            <div class="relative flex-1">
+              <input
+                v-if="searchMode === 'place'"
+                v-model="searchText"
+                @keyup.enter="goSearch"
+                type="text"
+                placeholder="輸入地點或地址"
+                class="w-full rounded-full border border-gray-300 bg-white pl-4 pr-20 py-2.5 text-sm shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
+              />
+              <input
+                v-else
+                v-model="roadSearchText"
+                @keyup.enter="goSearch"
+                @focus="openRoadSuggestionDropdown"
+                @blur="closeRoadSuggestionDropdown"
+                type="text"
+                placeholder="輸入道路名稱"
+                class="w-full rounded-full border border-gray-300 bg-white pl-4 pr-20 py-2.5 text-sm shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
+              />
+
+              <div class="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
+                <button
+                  v-if="(searchMode === 'road' ? roadSearchText : searchText)"
+                  @click="clearSearchText"
+                  type="button"
+                  class="flex h-7 w-7 items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                  title="清除輸入"
+                >
+                  <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                  </svg>
+                </button>
+                <button
+                  @click="goSearch"
+                  type="button"
+                  class="flex h-7 w-7 items-center justify-center rounded-full bg-sky-500 text-white hover:bg-sky-600"
+                  :disabled="searchMode === 'road' && isSearchingRoad"
+                  :class="{ 'opacity-60 cursor-not-allowed': searchMode === 'road' && isSearchingRoad }"
+                  title="搜尋"
+                >
+                  <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                  </svg>
+                </button>
+              </div>
+
+              <div
+                v-if="searchMode === 'road' && (showRoadSuggestions || isFetchingRoadSuggestions)"
+                class="absolute left-0 right-0 top-full mt-2 max-h-56 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg"
               >
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                </svg>
-              </button>
-              <button
-                @click="goSearch"
-                type="button"
-                class="flex h-7 w-7 items-center justify-center rounded-full bg-sky-500 text-white hover:bg-sky-600"
-                title="搜尋"
-              >
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-                </svg>
-              </button>
+                <div v-if="isFetchingRoadSuggestions" class="px-4 py-3 text-sm text-gray-500">載入中...</div>
+                <template v-else>
+                  <button
+                    v-for="name in roadSuggestions"
+                    :key="name"
+                    type="button"
+                    class="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-sky-50"
+                    @mousedown.prevent="selectRoadSuggestion(name)"
+                  >
+                    {{ name }}
+                  </button>
+                  <div v-if="roadSuggestions.length === 0" class="px-4 py-3 text-sm text-gray-500">沒有符合的道路</div>
+                </template>
+              </div>
             </div>
           </div>
         </div>

@@ -10,6 +10,8 @@ RUN uv sync --no-dev --frozen
 
 COPY app ./app
 COPY alembic ./alembic
+COPY scripts ./scripts
+COPY data ./data
 COPY alembic.ini .
 
 CMD exec uv run uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}
