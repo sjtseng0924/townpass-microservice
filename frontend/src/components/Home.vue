@@ -117,14 +117,21 @@ function removeFavorite(id) {
 function toggleNotification(placeId) {
   notificationEnabled.value[placeId] = !notificationEnabled.value[placeId]
   saveNotificationSettings()
-  
-  if (notificationEnabled.value[placeId]) {
-    // TODO: 通知 Flutter 啟用這個地點的通知
-    alert(`已開啟「${savedPlaces.value.find(p => p.id === placeId)?.name}」的通知`)
-  } else {
-    // TODO: 通知 Flutter 關閉這個地點的通知
-    alert(`已關閉通知`)
-  }
+  const place = savedPlaces.value.find(p => p.id === placeId)
+  const enabled = notificationEnabled.value[placeId]
+  // 發送訊息給 Flutter（若存在），以顯示手機通知並同步訂閱列表
+  try {
+    const payload = {
+      name: 'notify',
+      data: {
+        title: 'TownPass',
+        content: enabled ? `已訂閱${place?.name ?? ''}` : `已取消訂閱${place?.name ?? ''}`,
+      },
+    }
+    if (typeof window !== 'undefined' && window.flutterObject?.postMessage) {
+      window.flutterObject.postMessage(JSON.stringify(payload))
+    }
+  } catch (_) {}
 }
 
 function selectCategoryForPlace(placeId, category) {
