@@ -36,6 +36,13 @@ const roadSuggestions = ref([])
 const showRoadSuggestions = ref(false)
 const isFetchingRoadSuggestions = ref(false)
 const isSearchingRoad = ref(false)
+const roadMatchList = ref([])
+const showRoadMatches = ref(false)
+const showRoadMatchDetail = ref(false)
+const selectedRoadMatch = ref(null)
+const roadMatchNotice = ref('')
+let lastRoadFeatureCollection = null
+const ROAD_CONSTRUCTION_DISTANCE_THRESHOLD = 15
 
 // （行政區清單已不再顯示）
 const TPE_DISTRICTS = []
@@ -286,11 +293,18 @@ function setRoadSearchData(featureCollection, presetBounds = null) {
 }
 
 function clearRoadSearchData() {
+  lastRoadFeatureCollection = null
+  roadMatchList.value = []
+  showRoadMatches.value = false
+  showRoadMatchDetail.value = false
+  selectedRoadMatch.value = null
+  roadMatchNotice.value = ''
   if (!map) return
   const src = map.getSource(ROAD_SEARCH_SOURCE_ID)
   if (src) {
     src.setData({ type: 'FeatureCollection', features: [] })
   }
+  updateRoadConstructionHighlights([], null)
 }
 
 watch(showNearby, async () => {
@@ -583,6 +597,7 @@ function applyDatasetFilter() {
     setDatasetVisibility(ds, ds.visible)
   }
   computeNearbyForCurrentCenter()
+  refreshRoadMatches()
 }
 
 function toggleDatasetCheckbox(datasetId) {
@@ -661,6 +676,194 @@ function collectNearbyPoints(lon, lat, options = {}) {
   }
   results.sort((a, b) => a.dist - b.dist)
   return limit ? results.slice(0, limit) : results
+}
+
+function pointToSegmentDistanceMeters(plon, plat, a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b)) return Number.POSITIVE_INFINITY
+  const cosLat = Math.cos(plat * Math.PI / 180)
+  const mPerDegLon = 111320 * cosLat
+  const mPerDegLat = 110574
+  const ax = (a[0] - plon) * mPerDegLon
+  const ay = (a[1] - plat) * mPerDegLat
+  const bx = (b[0] - plon) * mPerDegLon
+  const by = (b[1] - plat) * mPerDegLat
+  const dx = bx - ax
+  const dy = by - ay
+  if (dx === 0 && dy === 0) return Math.hypot(ax, ay)
+  const t = -(ax * dx + ay * dy) / (dx * dx + dy * dy)
+  if (t <= 0) return Math.hypot(ax, ay)
+  if (t >= 1) return Math.hypot(bx, by)
+  const projX = ax + t * dx
+  const projY = ay + t * dy
+  return Math.hypot(projX, projY)
+}
+
+function pointToLineStringDistanceMeters(plon, plat, coordinates) {
+  if (!Array.isArray(coordinates) || coordinates.length < 2) return Number.POSITIVE_INFINITY
+  let min = Number.POSITIVE_INFINITY
+  for (let i = 0; i < coordinates.length - 1; i++) {
+    const d = pointToSegmentDistanceMeters(plon, plat, coordinates[i], coordinates[i + 1])
+    if (d < min) min = d
+  }
+  return min
+}
+
+function collectRoadConstructionMatches(featureCollection, maxDistance = ROAD_CONSTRUCTION_DISTANCE_THRESHOLD) {
+  if (!featureCollection || !Array.isArray(featureCollection?.features)) return []
+  const constructionDs = datasets.value.find((ds) => ds.id === 'construction')
+  if (!constructionDs || !constructionDs.visible) return []
+  const cache = datasetCache.get('construction')
+  const constructionFeatures = cache?.geo?.features || []
+  if (!constructionFeatures.length) return []
+
+  const roadSegments = []
+  for (const f of featureCollection.features) {
+    const geom = f?.geometry
+    if (!geom) continue
+    if (geom.type === 'LineString') {
+      roadSegments.push(geom.coordinates)
+    } else if (geom.type === 'MultiLineString') {
+      for (const coords of geom.coordinates || []) roadSegments.push(coords)
+    }
+  }
+  if (!roadSegments.length) return []
+
+  const results = []
+  for (const feature of constructionFeatures) {
+    const geom = feature?.geometry
+    if (!geom || geom.type !== 'Point') continue
+    const [lon, lat] = geom.coordinates || []
+    if (typeof lon !== 'number' || typeof lat !== 'number') continue
+
+    let minDist = Number.POSITIVE_INFINITY
+    for (const coords of roadSegments) {
+      const d = pointToLineStringDistanceMeters(lon, lat, coords)
+      if (d < minDist) minDist = d
+      if (minDist <= maxDistance) break
+    }
+    if (minDist <= maxDistance) {
+      const props = feature.properties || {}
+      let name = props['AP_NAME'] || props['場地名稱'] || props['name'] || '(未命名)'
+      let addr = props['PURP'] || props['地址'] || props['road'] || ''
+      results.push({
+        dsid: 'construction',
+        name,
+        addr,
+        dist: Math.round(minDist),
+        lon,
+        lat,
+        props,
+      })
+    }
+  }
+
+  results.sort((a, b) => a.dist - b.dist)
+  return results
+}
+
+function updateRoadConstructionHighlights(matches, featureCollection) {
+  if (!map) return
+  ensureNearbyCircleLayer()
+  const pointFeatures = matches.map((item) => ({
+    type: 'Feature',
+    geometry: { type: 'Point', coordinates: [item.lon, item.lat] },
+    properties: { ...(item.props || {}), dataset: 'construction' },
+  }))
+
+  const lineFeatures = []
+  for (const f of featureCollection?.features || []) {
+    const geom = f?.geometry
+    if (!geom) continue
+    if (geom.type === 'LineString' || geom.type === 'MultiLineString') {
+      lineFeatures.push({
+        type: 'Feature',
+        geometry: geom,
+        properties: { ...(f.properties || {}), dataset: 'road_search' },
+      })
+    }
+  }
+
+  map.getSource('nearby-points-highlight')?.setData({ type: 'FeatureCollection', features: pointFeatures })
+  map.getSource('nearby-lines-highlight')?.setData({ type: 'FeatureCollection', features: lineFeatures })
+  map.getSource('nearby-circle')?.setData({ type: 'FeatureCollection', features: [] })
+  map.getSource('nearby-center')?.setData({ type: 'FeatureCollection', features: [] })
+}
+
+function refreshRoadMatches(autoOpen = false) {
+  if (!lastRoadFeatureCollection) {
+    roadMatchNotice.value = ''
+    return
+  }
+
+  const constructionDs = datasets.value.find((ds) => ds.id === 'construction')
+  if (!constructionDs || !constructionDs.visible) {
+    roadMatchList.value = []
+    roadMatchNotice.value = '請在設定中啟用「施工地點」資料集以查看道路施工據點'
+    showRoadMatches.value = false
+    showRoadMatchDetail.value = false
+    selectedRoadMatch.value = null
+    updateRoadConstructionHighlights([], lastRoadFeatureCollection)
+    return
+  }
+
+  const matches = collectRoadConstructionMatches(lastRoadFeatureCollection)
+  roadMatchList.value = matches
+
+  if (matches.length === 0) {
+    roadMatchNotice.value = '此道路 15 公尺內沒有符合條件的施工點'
+    showRoadMatches.value = false
+    showRoadMatchDetail.value = false
+    selectedRoadMatch.value = null
+  } else {
+    roadMatchNotice.value = ''
+    if (autoOpen) {
+      showRoadMatches.value = true
+      showRoadMatchDetail.value = false
+      selectedRoadMatch.value = null
+    } else if (showRoadMatchDetail.value && selectedRoadMatch.value) {
+      const current = matches.find((item) => item.lon === selectedRoadMatch.value.lon && item.lat === selectedRoadMatch.value.lat)
+      if (!current) {
+        showRoadMatchDetail.value = false
+        selectedRoadMatch.value = null
+      }
+    }
+  }
+
+  updateRoadConstructionHighlights(matches, lastRoadFeatureCollection)
+}
+
+function openRoadMatchList() {
+  if (!roadMatchList.value.length) return
+  showRoadMatches.value = true
+  showRoadMatchDetail.value = false
+  selectedRoadMatch.value = null
+}
+
+function closeRoadMatchList() {
+  showRoadMatches.value = false
+  showRoadMatchDetail.value = false
+  selectedRoadMatch.value = null
+  const existingPopups = document.querySelectorAll('.mapboxgl-popup')
+  existingPopups.forEach((p) => p.remove())
+}
+
+function showRoadMatchPopup(item) {
+  if (!item) return
+  if (!map) return
+  selectedRoadMatch.value = item
+  showRoadMatchDetail.value = true
+  showRoadMatches.value = true
+  const existingPopups = document.querySelectorAll('.mapboxgl-popup')
+  existingPopups.forEach((p) => p.remove())
+  flyToLngLat(item.lon, item.lat, 16, { bottom: 250 })
+  createMapPopup(item.props || {}, 'construction', [item.lon, item.lat])
+}
+
+function backToRoadMatchList() {
+  showRoadMatchDetail.value = false
+  selectedRoadMatch.value = null
+  const existingPopups = document.querySelectorAll('.mapboxgl-popup')
+  existingPopups.forEach((p) => p.remove())
 }
 
 
@@ -844,6 +1047,7 @@ function getCurrentCenterLonLat() {
 }
 
 function computeNearbyForCurrentCenter() {
+  if (lastRoadFeatureCollection) return
   const c = getCurrentCenterLonLat()
   computeNearby(c.lon, c.lat)
 }
@@ -958,10 +1162,20 @@ async function performRoadSearch() {
     clearSearchMarker()
     selectedPlace.value = null
     originMode.value = 'search'
+    showNearby.value = false
+    showDetailView.value = false
+    selectedNearbyItem.value = null
+    const existingPopups = document.querySelectorAll('.mapboxgl-popup')
+    existingPopups.forEach((p) => p.remove())
+    const constructionDs = datasets.value.find((ds) => ds.id === 'construction')
+    if (constructionDs) {
+      try { await ensureDatasetLoaded(constructionDs) } catch (_) {}
+    }
+    lastRoadFeatureCollection = collection
+    refreshRoadMatches(true)
     if (fittedBounds && !fittedBounds.isEmpty()) {
       const center = fittedBounds.getCenter()
       lastSearchLonLat.value = { lon: center.lng, lat: center.lat }
-      computeNearby(center.lng, center.lat)
     }
   } catch (err) {
     console.warn('Failed to search road segments', err)
@@ -1330,70 +1544,137 @@ onBeforeUnmount(() => {
 
           <!-- 附近列表 -->
           <div class="pointer-events-none absolute inset-x-0 bottom-0 px-2 pb-2">
-            <!-- 詳細資訊模式：只顯示一行該筆資料 -->
-            <div v-if="showNearby && showDetailView && selectedNearbyItem" class="pointer-events-auto w-full rounded-2xl border border-gray-200 bg-white/95 shadow-sm">
-              <div class="flex items-center justify-between px-4 py-3">
-                <div class="min-w-0 flex-1">
-                  <div class="font-medium truncate">{{ selectedNearbyItem.name }}</div>
-                  <div class="truncate text-xs text-gray-600">{{ selectedNearbyItem.addr }}</div>
+            <template v-if="roadMatchList.length || roadMatchNotice">
+              <div v-if="roadMatchList.length">
+                <div v-if="showRoadMatches && showRoadMatchDetail && selectedRoadMatch" class="pointer-events-auto w-full rounded-2xl border border-gray-200 bg-white/95 shadow-sm">
+                  <div class="flex items-center justify-between px-4 py-3">
+                    <div class="min-w-0 flex-1">
+                      <div class="font-medium truncate">{{ selectedRoadMatch.name }}</div>
+                      <div class="truncate text-xs text-gray-600">{{ selectedRoadMatch.addr }}</div>
+                    </div>
+                    <div class="flex items-center gap-3 ml-3">
+                      <div class="whitespace-nowrap text-sm font-semibold">距道路 {{ selectedRoadMatch.dist }} 公尺</div>
+                    </div>
+                  </div>
+                  <div class="px-4 pb-3">
+                    <button
+                      class="w-full rounded border px-3 py-2 text-sm hover:bg-gray-100 transition-colors text-gray-700"
+                      @click="backToRoadMatchList"
+                    >
+                      ← 返回道路施工列表
+                    </button>
+                  </div>
                 </div>
-                <div class="flex items-center gap-3 ml-3">
-                  <div class="whitespace-nowrap text-sm font-semibold">{{ selectedNearbyItem.dist }} 公尺</div>
+                <div v-else-if="showRoadMatches" class="pointer-events-auto w-full rounded-2xl border border-gray-200 bg-white/95 shadow-sm">
+                  <button
+                    class="flex w-full items-center justify-between rounded-t-2xl px-4 py-3 text-left font-medium"
+                    @click="closeRoadMatchList"
+                  >
+                    <span>道路沿線施工據點（{{ roadMatchList.length }}）</span>
+                    <span class="text-sm text-gray-500">收合</span>
+                  </button>
+                  <div class="max-h-48 overflow-y-auto px-4 pb-4">
+                    <ul class="divide-y">
+                      <li
+                        v-for="(it, idx) in roadMatchList"
+                        :key="idx"
+                        class="flex items-center justify-between py-2"
+                      >
+                        <div class="min-w-0">
+                          <div class="font-medium truncate">{{ it.name }}</div>
+                          <div class="truncate text-xs text-gray-600">{{ it.addr }}</div>
+                        </div>
+                        <div class="flex items-center gap-3">
+                          <div class="whitespace-nowrap text-sm font-semibold">{{ it.dist }} 公尺</div>
+                          <button
+                            class="rounded border px-2 py-1 text-xs hover:bg-gray-100 transition-colors"
+                            @click="showRoadMatchPopup(it)"
+                          >
+                            詳細資訊
+                          </button>
+                        </div>
+                      </li>
+                    </ul>
+                  </div>
                 </div>
-              </div>
-              <div class="px-4 pb-3">
                 <button
-                  class="w-full rounded border px-3 py-2 text-sm hover:bg-gray-100 transition-colors text-gray-700"
-                  @click="backToNearbyList"
+                  v-else
+                  class="pointer-events-auto mx-auto flex items-center gap-2 rounded-full bg-white/95 px-4 py-2 text-sm font-medium shadow"
+                  @click="openRoadMatchList"
                 >
-                  ← 返回搜尋結果
+                  查看道路施工據點（{{ roadMatchList.length }}）
                 </button>
               </div>
-            </div>
-            <!-- 正常清單模式 -->
-            <div v-else-if="showNearby" class="pointer-events-auto w-full rounded-2xl border border-gray-200 bg-white/95 shadow-sm">
-              <button
-                class="flex w-full items-center justify-between rounded-t-2xl px-4 py-3 text-left font-medium"
-                @click="closeNearbyList"
-              >
-                <span>距中心點 1 公里內的據點（{{ nearbyList.length }}）</span>
-                <span class="text-sm text-gray-500">收合</span>
-              </button>
-              <div class="max-h-48 overflow-y-auto px-4 pb-4">
-                <p v-if="!userLonLat && !lastSearchLonLat" class="text-sm text-gray-500">等待 GPS 定位中，或先進行一次搜尋。</p>
-                <ul v-else class="divide-y">
-                  <li
-                    v-for="(it, idx) in nearbyList"
-                    :key="idx"
-                    class="flex items-center justify-between py-2"
-                  >
-                    <div class="min-w-0">
-                      <div class="font-medium truncate">{{ it.name }}</div>
-                      <div class="truncate text-xs text-gray-600">{{ it.addr }}</div>
-                    </div>
-                    <div class="flex items-center gap-3">
-                      <div class="whitespace-nowrap text-sm font-semibold">{{ it.dist }} 公尺</div>
-                      <button
-                        class="rounded border px-2 py-1 text-xs hover:bg-gray-100 transition-colors"
-                        @click="showNearbyItemPopup(it)"
-                      >
-                        詳細資訊
-                      </button>
-                    </div>
-                  </li>
-                  <li v-if="nearbyList.length === 0" class="py-3 text-sm text-gray-500">
-                    1 公里內沒有符合條件的據點
-                  </li>
-                </ul>
+              <div v-else class="pointer-events-auto mx-auto flex items-center gap-2 rounded-full bg-white/95 px-4 py-2 text-sm font-medium shadow">
+                {{ roadMatchNotice }}
               </div>
-            </div>
-            <button
-              v-else
-              class="pointer-events-auto mx-auto flex items-center gap-2 rounded-full bg-white/95 px-4 py-2 text-sm font-medium shadow"
-              @click="showNearby = true"
-            >
-              查看附近 1 公里內據點（{{ nearbyList.length }}）
-            </button>
+            </template>
+            <template v-else>
+              <!-- 詳細資訊模式：只顯示一行該筆資料 -->
+              <div v-if="showNearby && showDetailView && selectedNearbyItem" class="pointer-events-auto w-full rounded-2xl border border-gray-200 bg-white/95 shadow-sm">
+                <div class="flex items-center justify-between px-4 py-3">
+                  <div class="min-w-0 flex-1">
+                    <div class="font-medium truncate">{{ selectedNearbyItem.name }}</div>
+                    <div class="truncate text-xs text-gray-600">{{ selectedNearbyItem.addr }}</div>
+                  </div>
+                  <div class="flex items-center gap-3 ml-3">
+                    <div class="whitespace-nowrap text-sm font-semibold">{{ selectedNearbyItem.dist }} 公尺</div>
+                  </div>
+                </div>
+                <div class="px-4 pb-3">
+                  <button
+                    class="w-full rounded border px-3 py-2 text-sm hover:bg-gray-100 transition-colors text-gray-700"
+                    @click="backToNearbyList"
+                  >
+                    ← 返回搜尋結果
+                  </button>
+                </div>
+              </div>
+              <!-- 正常清單模式 -->
+              <div v-else-if="showNearby" class="pointer-events-auto w-full rounded-2xl border border-gray-200 bg-white/95 shadow-sm">
+                <button
+                  class="flex w-full items-center justify-between rounded-t-2xl px-4 py-3 text-left font-medium"
+                  @click="closeNearbyList"
+                >
+                  <span>距中心點 1 公里內的據點（{{ nearbyList.length }}）</span>
+                  <span class="text-sm text-gray-500">收合</span>
+                </button>
+                <div class="max-h-48 overflow-y-auto px-4 pb-4">
+                  <p v-if="!userLonLat && !lastSearchLonLat" class="text-sm text-gray-500">等待 GPS 定位中，或先進行一次搜尋。</p>
+                  <ul v-else class="divide-y">
+                    <li
+                      v-for="(it, idx) in nearbyList"
+                      :key="idx"
+                      class="flex items-center justify-between py-2"
+                    >
+                      <div class="min-w-0">
+                        <div class="font-medium truncate">{{ it.name }}</div>
+                        <div class="truncate text-xs text-gray-600">{{ it.addr }}</div>
+                      </div>
+                      <div class="flex items-center gap-3">
+                        <div class="whitespace-nowrap text-sm font-semibold">{{ it.dist }} 公尺</div>
+                        <button
+                          class="rounded border px-2 py-1 text-xs hover:bg-gray-100 transition-colors"
+                          @click="showNearbyItemPopup(it)"
+                        >
+                          詳細資訊
+                        </button>
+                      </div>
+                    </li>
+                    <li v-if="nearbyList.length === 0" class="py-3 text-sm text-gray-500">
+                      1 公里內沒有符合條件的據點
+                    </li>
+                  </ul>
+                </div>
+              </div>
+              <button
+                v-else
+                class="pointer-events-auto mx-auto flex items-center gap-2 rounded-full bg-white/95 px-4 py-2 text-sm font-medium shadow"
+                @click="showNearby = true"
+              >
+                查看附近 1 公里內據點（{{ nearbyList.length }}）
+              </button>
+            </template>
           </div>
         </div>
       </div>
