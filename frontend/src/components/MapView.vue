@@ -228,7 +228,16 @@ function toggleSelectedPlaceFavorite() {
     ...favorites.value,
     {
       ...selectedPlace.value,
-      recommendations: nearby.map(({ name, addr, dist, lon, lat }) => ({ name, addr, dist, lon, lat })),
+      // 保留資料集與屬性，供推薦頁分類與顯示使用
+      recommendations: nearby.map((r) => ({
+        name: r.name,
+        addr: r.addr,
+        dist: r.dist,
+        lon: r.lon,
+        lat: r.lat,
+        dsid: r.dsid,
+        props: r.props || null,
+      })),
       addedAt: new Date().toISOString(),
     },
   ]
