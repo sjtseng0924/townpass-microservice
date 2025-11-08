@@ -24,6 +24,9 @@ services:
       db:
         condition: service_healthy
     command: uv run alembic -c alembic.ini upgrade head
+    volumes:
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini:ro
 
   adminer:
     image: adminer
@@ -46,6 +49,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./app:/app/app
+      - ./scripts:/app/scripts
       - ./alembic:/app/alembic
 
 volumes:

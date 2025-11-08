@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends, Response, status
+import json
+
+from fastapi import APIRouter, Depends, Query, Response, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from typing import Dict, Any
 from ..database import get_db
@@ -44,6 +47,75 @@ def create_test_record(payload: schemas.TestCreate, db: Session = Depends(get_db
     db.commit()
     db.refresh(tr)
     return tr
+
+
+@router.get("/road_segments/suggest")
+def suggest_road_segments(
+    q: str = Query(..., min_length=1, description="Keyword to match road segment names"),
+    limit: int = Query(10, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    stmt = (
+        select(models.RoadSegment.name)
+        .where(models.RoadSegment.name.isnot(None))
+        .where(models.RoadSegment.name.ilike(f"%{q}%"))
+        .distinct()
+        .order_by(models.RoadSegment.name.asc())
+        .limit(limit)
+    )
+    names = db.execute(stmt).scalars().all()
+    return {"items": names}
+
+
+@router.get("/road_segments/search")
+def search_road_segments(
+    name: str = Query(..., min_length=1, description="Full road name to search"),
+    db: Session = Depends(get_db),
+):
+    segments = (
+        db.query(models.RoadSegment)
+        .filter(models.RoadSegment.name == name)
+        .order_by(models.RoadSegment.id.asc())
+        .all()
+    )
+
+    features = []
+    for seg in segments:
+        geometry = seg.geometry or {}
+        properties = seg.properties or {}
+        if isinstance(properties, str):
+            try:
+                properties = json.loads(properties)
+            except Exception:
+                properties = {"raw_properties": properties}
+        if isinstance(geometry, str):
+            try:
+                geometry = json.loads(geometry)
+            except Exception:
+                geometry = None
+        if not geometry:
+            continue
+
+        # Merge basic columns into properties for popup usage
+        merged_props = {
+            **({} if not isinstance(properties, dict) else properties),
+            "name": seg.name,
+            "highway": seg.highway,
+            "lanes": seg.lanes,
+            "oneway": seg.oneway,
+            "length_m": seg.length_m,
+            "osmid": seg.osmid,
+        }
+        features.append({
+            "type": "Feature",
+            "properties": merged_props,
+            "geometry": geometry,
+        })
+
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+    }
 
 @router.get("/construction/geojson", response_model=Dict[str, Any])
 def get_construction_data(response: Response):

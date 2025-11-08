@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import BaseModel
 from datetime import date
 
@@ -20,6 +22,28 @@ class TestOut(BaseModel):
     title: str
     description: str | None = None
     class Config: orm_mode = True
+
+
+class RoadSegmentBase(BaseModel):
+    name: str | None = None
+    highway: str | None = None
+    lanes: str | None = None
+    oneway: bool | None = None
+    length_m: float | None = None
+    properties: dict[str, Any] | None = None
+    geometry: dict[str, Any]
+
+
+class RoadSegmentCreate(RoadSegmentBase):
+    osmid: str
+
+
+class RoadSegmentOut(RoadSegmentBase):
+    id: int
+    osmid: str
+
+    class Config:
+        orm_mode = True
 
 
 class ConstructionNoticeOut(BaseModel):

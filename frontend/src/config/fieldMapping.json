@@ -16,12 +16,21 @@
   },
   "construction": {
     "場地名稱": "AP_NAME",
-    "用途": "PURP"
+    "用途": "PURP",
+    "行政區": "行政區",
+    "地址": "地址"
   },
   "narrow_street": {
     "巷弄名稱": "alley_name",
     "巷弄寬度": "width",
     "分類": "category"
+  },
+  "road_search": {
+    "道路名稱": "name",
+    "道路類型": "highway",
+    "車道數": "lanes",
+    "是否單向": "oneway",
+    "長度(公尺)": "length_m"
   }
 }
 

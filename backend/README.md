@@ -155,7 +155,25 @@ docker compose up --build
   - 若要保留資料：用 postgres superuser 修改使用者密碼（`docker exec -it townpass_db psql -U postgres -c "ALTER USER admin WITH PASSWORD 'password';"`），或新增一個 DB 使用者並更新 `DATABASE_URL`。
 - 若 Alembic autogenerate 沒偵測變更：確認 `alembic/env.py` 的 `target_metadata` 已指向 `app.database.Base.metadata`，並且 models 已匯入（alembic 需要匯入 model module 才能看到 metadata）。
 
-7) 其他建議
+7) 匯入道路中心線資料
+
+- 將 `TaipeiRoadCenterLine.geojson` 放在 `backend/data/`（預設檔名）。
+- 本機執行：
+  ```cmd
+  cd backend
+  uv run python -m scripts.load_road_segments
+  ```
+  或指定路徑：
+  ```cmd
+  uv run python -m scripts.load_road_segments data/TaipeiRoadCenterLine.geojson
+  ```
+- Docker Compose 環境：
+  ```cmd
+  docker compose exec api uv run python -m scripts.load_road_segments /app/data/TaipeiRoadCenterLine.geojson
+  ```
+- CI / 部署腳本建議在 `alembic upgrade head` 之後追加同一指令，確保資料存在。
+
+8) 其他建議
 
 - 把敏感資訊（service account、明碼密碼）放到 CI / Secret Manager，不要直接放到版控。
 - 開發流程：本機用 `uvicorn --reload` 或用 compose 的 `api`；在 CI 用 `alembic upgrade head` 再部署到 Cloud Run / GKE / 其他。
