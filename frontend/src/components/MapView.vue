@@ -629,6 +629,10 @@ onMounted(async () => {
       }
 
       startPollingFlutter(1000)
+      
+      // 初始化時計算一次附近清單
+      computeNearbyForCurrentCenter()
+      
       map.resize()
     } catch (err) {
       console.warn('Failed to load datasets:', err)
