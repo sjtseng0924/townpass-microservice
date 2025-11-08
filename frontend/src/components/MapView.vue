@@ -23,7 +23,7 @@ const searchText = ref('')
 const roadSearchText = ref('')
 // 行政區篩選已移除，改用資料集顯示切換
 const selectedDistrict = ref('')   // 保留但不再顯示 UI（若未來需要可再啟用）
-const datasetFilter = ref('all')   // 'all' | 'attraction' | 'construction' | 'narrow_street'
+const enabledDatasets = ref(['attraction', 'construction', 'narrow_street']) // 已啟用的資料集 ID 陣列
 const showNearby = ref(false)
 const nearbyList = ref([])
 const selectedNearbyItem = ref(null) // 當前選中的詳細資訊項目
@@ -576,13 +576,33 @@ function clearSearchMarker() {
 }
 
 // ===== 行政區篩選 =====
-// 資料集顯示切換（全部/景點/施工地點）
+// 資料集顯示切換（多選）
 function applyDatasetFilter() {
   for (const ds of datasets.value) {
-    ds.visible = (datasetFilter.value === 'all') || (datasetFilter.value === ds.id)
+    ds.visible = enabledDatasets.value.includes(ds.id)
     setDatasetVisibility(ds, ds.visible)
   }
   computeNearbyForCurrentCenter()
+}
+
+function toggleDatasetCheckbox(datasetId) {
+  const index = enabledDatasets.value.indexOf(datasetId)
+  if (index > -1) {
+    enabledDatasets.value.splice(index, 1)
+  } else {
+    enabledDatasets.value.push(datasetId)
+  }
+  applyDatasetFilter()
+}
+
+function selectAllDatasets() {
+  enabledDatasets.value = datasets.value.map(ds => ds.id)
+  applyDatasetFilter()
+}
+
+function deselectAllDatasets() {
+  enabledDatasets.value = []
+  applyDatasetFilter()
 }
 
 // ===== 距離計算（Haversine，公尺）=====
@@ -1069,6 +1089,8 @@ onMounted(async () => {
     try {
       ensureRoadSearchLayer()
       for (const ds of datasets.value) await ensureDatasetLoaded(ds)
+      // 應用初始資料集篩選設定
+      applyDatasetFilter()
       ensureUserLayer()
       ensureSearchMarkerLayer()
 
@@ -1262,20 +1284,44 @@ onBeforeUnmount(() => {
                 <!-- 設定選單：資料集顯示切換 -->
                 <div
                   v-if="showSettingsPanel"
-                  class="absolute right-0 top-full mt-2 w-48 rounded-lg border border-gray-200 bg-white shadow-lg"
+                  class="absolute right-0 top-full mt-2 w-56 rounded-lg border border-gray-200 bg-white shadow-lg"
                 >
                   <div class="p-3">
-                    <label class="mb-2 block text-xs font-medium text-gray-600">顯示資料集</label>
-                    <select
-                      v-model="datasetFilter"
-                      @change="applyDatasetFilter"
-                      class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
-                    >
-                      <option value="all">全部</option>
-                      <option value="attraction">景點</option>
-                      <option value="construction">施工地點</option>
-                      <option value="narrow_street">巷弄線圖</option>
-                    </select>
+                    <div class="mb-2 flex items-center justify-between">
+                      <label class="block text-xs font-medium text-gray-600">顯示資料集</label>
+                      <div class="flex gap-1">
+                        <button
+                          @click="selectAllDatasets"
+                          type="button"
+                          class="text-xs text-sky-600 hover:text-sky-800"
+                        >
+                          全選
+                        </button>
+                        <span class="text-xs text-gray-400">|</span>
+                        <button
+                          @click="deselectAllDatasets"
+                          type="button"
+                          class="text-xs text-sky-600 hover:text-sky-800"
+                        >
+                          全不選
+                        </button>
+                      </div>
+                    </div>
+                    <div class="space-y-2">
+                      <label
+                        v-for="ds in datasets"
+                        :key="ds.id"
+                        class="flex items-center gap-2 cursor-pointer hover:bg-gray-50 rounded px-2 py-1.5"
+                      >
+                        <input
+                          type="checkbox"
+                          :checked="enabledDatasets.includes(ds.id)"
+                          @change="toggleDatasetCheckbox(ds.id)"
+                          class="h-4 w-4 rounded border-gray-300 text-sky-600 focus:ring-sky-500"
+                        />
+                        <span class="text-sm text-gray-700">{{ ds.name }}</span>
+                      </label>
+                    </div>
                   </div>
                 </div>
               </div>
