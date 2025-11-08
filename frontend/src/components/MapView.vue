@@ -34,6 +34,7 @@ const showDetailView = ref(false) // 是否顯示詳細資訊模式（單行顯�
 const lastSearchLonLat = ref(null)  // { lon, lat }：最近一次「搜尋中心」
 const userLonLat = ref(null)        // { lon, lat }：最新「GPS 定位」
 const originMode = ref('gps')       // 'gps' | 'search'
+const hasCenteredOnGps = ref(false)
 const showSettingsPanel = ref(false) // 設定齒輪彈窗開關
 
 // （行政區清單已不再顯示）
@@ -405,6 +406,12 @@ function setRoadSearchData(featureCollection, presetBounds = null) {
 watch(showNearby, async () => {
   await nextTick()
   map?.resize()
+})
+
+watch(originMode, (mode) => {
+  if (mode !== 'gps') {
+    hasCenteredOnGps.value = false
+  }
 })
 
 watch(searchMode, (mode) => {
@@ -1269,6 +1276,7 @@ function centerOnUserLocation() {
   const { lon, lat } = userLonLat.value
   map.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom() ?? 0, 15) })
   originMode.value = 'gps'
+  hasCenteredOnGps.value = true
   computeNearby(lon, lat)
 }
 
@@ -1309,10 +1317,11 @@ function updateUserLocation(lon, lat) {
   userLonLat.value = { lon, lat }
   setUserSource(lon, lat)
   // 若目前中心來源是 GPS（或尚未有搜尋），就更新附近清單並移動視角
-  if (originMode.value === 'gps') {
+  if (originMode.value === 'gps' && !hasCenteredOnGps.value) {
     map.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom() ?? 0, 14) })
-    computeNearbyForCurrentCenter()
+    hasCenteredOnGps.value = true
   }
+  computeNearby(lon, lat)
 }
 
 function handleIncomingMessage(raw) {
