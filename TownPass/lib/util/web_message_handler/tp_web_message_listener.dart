@@ -6,6 +6,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 abstract class TPWebMessageListener {
   static List<TPWebMessageHandler> get messageHandler => [
         UserinfoWebMessageHandler(),
+        GetUserIdWebMessageHandler(),
         LaunchMapWebMessageHandler(),
         PhoneCallMessageHandler(),
         Agree1999MessageHandler(),

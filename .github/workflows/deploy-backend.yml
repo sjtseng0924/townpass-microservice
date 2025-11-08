@@ -64,7 +64,7 @@ jobs:
           --service-account github-deployer@${{ secrets.PROJECT_ID }}.iam.gserviceaccount.com
           --command=bash
           --args=-lc
-          --args="cd /app && uv run alembic -c alembic.ini upgrade head && uv run python scripts/load_road_segments.py"
+          --args="cd /app && uv run alembic -c alembic.ini upgrade head && uv run python scripts/init_default_user.py && uv run python scripts/load_road_segments.py"
           --max-retries=1 --memory=512Mi --cpu=1 --task-timeout=900s
 
       - name: Run DB Migration Job (execute & print logs)

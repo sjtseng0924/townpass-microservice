@@ -1,6 +1,7 @@
 import json
+import traceback
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Response, status, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from typing import Dict, Any
@@ -200,3 +201,212 @@ def update_construction_notices_endpoint(
     except Exception as e:
         logger.error(f"Update construction notices failed: {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
+
+
+# Favorite endpoints
+@router.get("/favorites", response_model=list[schemas.FavoriteOut])
+def list_favorites(
+    user_id: int = Query(None, description="User ID (internal)"),
+    external_id: str = Query(None, description="External User ID (UUID from Flutter)"),
+    db: Session = Depends(get_db)
+):
+    """獲取用戶的收藏列表"""
+    # 如果提供了 external_id，先查找對應的 user_id
+    if external_id and not user_id:
+        user = db.query(models.User).filter(models.User.external_id == external_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail=f"User with external_id {external_id} not found")
+        user_id = user.id
+    elif not user_id:
+        raise HTTPException(status_code=400, detail="Either user_id or external_id must be provided")
+    
+    favorites = (
+        db.query(models.Favorite)
+        .filter(models.Favorite.user_id == user_id)
+        .order_by(models.Favorite.added_at.desc())
+        .all()
+    )
+    return favorites
+
+
+@router.post("/favorites", response_model=schemas.FavoriteOut)
+def create_favorite(
+    payload: schemas.FavoriteCreate,
+    external_id: str = Query(None, description="External User ID (UUID from Flutter)"),
+    db: Session = Depends(get_db)
+):
+    """創建收藏"""
+    try:
+        # 如果提供了 external_id，先查找或創建用戶
+        if external_id:
+            user = db.query(models.User).filter(models.User.external_id == external_id).first()
+            if not user:
+                # 如果用戶不存在，創建新用戶
+                user = models.User(name="Default User", external_id=external_id)
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+            payload.user_id = user.id
+        elif not payload.user_id:
+            raise HTTPException(status_code=400, detail="Either user_id in payload or external_id query parameter must be provided")
+        
+        # 檢查用戶是否存在
+        user = db.query(models.User).filter(models.User.id == payload.user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail=f"User with id {payload.user_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in create_favorite (user lookup): {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    
+    # 檢查是否已存在相同的收藏（根據 type 和 name 或 id）
+    existing = None
+    if payload.type == 'place' and payload.place_data and payload.place_data.get('id'):
+        # 查詢所有該用戶的 place 類型收藏，然後在 Python 中過濾
+        place_favorites = (
+            db.query(models.Favorite)
+            .filter(
+                models.Favorite.user_id == payload.user_id,
+                models.Favorite.type == 'place'
+            )
+            .all()
+        )
+        for fav in place_favorites:
+            if fav.place_data and fav.place_data.get('id') == payload.place_data.get('id'):
+                existing = fav
+                break
+    elif payload.type == 'road' and payload.road_name:
+        # 對於道路，使用 road_name 和 road_osmids 來判斷
+        existing = (
+            db.query(models.Favorite)
+            .filter(
+                models.Favorite.user_id == payload.user_id,
+                models.Favorite.type == 'road',
+                models.Favorite.road_name == payload.road_name
+            )
+            .first()
+        )
+    elif payload.type == 'route' and payload.route_start and payload.route_end:
+        existing = (
+            db.query(models.Favorite)
+            .filter(
+                models.Favorite.user_id == payload.user_id,
+                models.Favorite.type == 'route',
+                models.Favorite.route_start == payload.route_start,
+                models.Favorite.route_end == payload.route_end
+            )
+            .first()
+        )
+    
+    if existing:
+        # 如果已存在，更新它
+        for key, value in payload.model_dump(exclude={'user_id'}).items():
+            if value is not None:
+                setattr(existing, key, value)
+        db.commit()
+        db.refresh(existing)
+        return existing
+    
+    # 創建新的收藏
+    try:
+        favorite = models.Favorite(**payload.model_dump())
+        db.add(favorite)
+        db.commit()
+        db.refresh(favorite)
+        return favorite
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating favorite: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Failed to create favorite: {str(e)}")
+
+
+@router.get("/favorites/{favorite_id}", response_model=schemas.FavoriteOut)
+def get_favorite(
+    favorite_id: int,
+    user_id: int = Query(..., description="User ID"),
+    db: Session = Depends(get_db)
+):
+    """獲取單個收藏"""
+    favorite = (
+        db.query(models.Favorite)
+        .filter(
+            models.Favorite.id == favorite_id,
+            models.Favorite.user_id == user_id
+        )
+        .first()
+    )
+    if not favorite:
+        raise HTTPException(status_code=404, detail=f"Favorite with id {favorite_id} not found")
+    return favorite
+
+
+@router.put("/favorites/{favorite_id}", response_model=schemas.FavoriteOut)
+def update_favorite(
+    favorite_id: int,
+    payload: schemas.FavoriteUpdate,
+    user_id: int = Query(None, description="User ID (internal)"),
+    external_id: str = Query(None, description="External User ID (UUID from Flutter)"),
+    db: Session = Depends(get_db)
+):
+    """更新收藏（主要用於更新通知設置）"""
+    # 如果提供了 external_id，先查找對應的 user_id
+    if external_id and not user_id:
+        user = db.query(models.User).filter(models.User.external_id == external_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail=f"User with external_id {external_id} not found")
+        user_id = user.id
+    elif not user_id:
+        raise HTTPException(status_code=400, detail="Either user_id or external_id must be provided")
+    
+    favorite = (
+        db.query(models.Favorite)
+        .filter(
+            models.Favorite.id == favorite_id,
+            models.Favorite.user_id == user_id
+        )
+        .first()
+    )
+    if not favorite:
+        raise HTTPException(status_code=404, detail=f"Favorite with id {favorite_id} not found")
+    
+    update_data = payload.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(favorite, key, value)
+    
+    db.commit()
+    db.refresh(favorite)
+    return favorite
+
+
+@router.delete("/favorites/{favorite_id}")
+def delete_favorite(
+    favorite_id: int,
+    user_id: int = Query(None, description="User ID (internal)"),
+    external_id: str = Query(None, description="External User ID (UUID from Flutter)"),
+    db: Session = Depends(get_db)
+):
+    """刪除收藏"""
+    # 如果提供了 external_id，先查找對應的 user_id
+    if external_id and not user_id:
+        user = db.query(models.User).filter(models.User.external_id == external_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail=f"User with external_id {external_id} not found")
+        user_id = user.id
+    elif not user_id:
+        raise HTTPException(status_code=400, detail="Either user_id or external_id must be provided")
+    
+    favorite = (
+        db.query(models.Favorite)
+        .filter(
+            models.Favorite.id == favorite_id,
+            models.Favorite.user_id == user_id
+        )
+        .first()
+    )
+    if not favorite:
+        raise HTTPException(status_code=404, detail=f"Favorite with id {favorite_id} not found")
+    
+    db.delete(favorite)
+    db.commit()
+    return {"status": "success", "message": "Favorite deleted"}

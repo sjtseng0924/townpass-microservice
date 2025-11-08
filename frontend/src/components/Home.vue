@@ -2,7 +2,7 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import TopTabs from './TopTabs.vue'
-import { getConstructionData, updateConstructionData, getConstructionNotices } from '@/service/api'
+import { getConstructionData, updateConstructionData, getConstructionNotices, getFavorites, updateFavorite, deleteFavorite } from '@/service/api'
 
 const router = useRouter()
 const currentTab = ref('recommend')
@@ -11,10 +11,11 @@ const expandedFavoriteIds = ref([])
 const notificationEnabled = ref({}) // { [placeId]: boolean }
 // 類別選擇：'nearby' | 'upcoming'
 const selectedCategory = ref({}) // { [placeId]: 'nearby' | 'upcoming' }
-const FAVORITES_STORAGE_KEY = 'mapFavorites'
 const NOTIFICATION_STORAGE_KEY = 'placeNotifications'
 const constructionNotices = ref([]) // 施工公告資料
 const loadingNotices = ref(false)
+const loadingFavorites = ref(false)
+const userId = ref(null) // 從 Flutter 獲取的用戶 ID
 const ROAD_NOTICE_DISTANCE_M = 15
 const ROUTE_NOTICE_DISTANCE_M = 50
 
@@ -33,19 +34,24 @@ function normalizeFavorite(raw) {
     recommendations: Array.isArray(raw?.recommendations) ? raw.recommendations : [],
   }
   if (type === 'road') {
-    normalized.roadDistanceThreshold = typeof raw.roadDistanceThreshold === 'number'
-      ? raw.roadDistanceThreshold
-      : ROAD_NOTICE_DISTANCE_M
+    normalized.roadDistanceThreshold = typeof raw.road_distance_threshold === 'number'
+      ? raw.road_distance_threshold
+      : (typeof raw.roadDistanceThreshold === 'number' ? raw.roadDistanceThreshold : ROAD_NOTICE_DISTANCE_M)
+    normalized.roadName = raw.road_name || raw.roadName
+    normalized.roadSearchName = raw.road_search_name || raw.roadSearchName
+    normalized.roadOsmids = raw.road_osmids || raw.roadOsmids
     if (!normalized.address) {
-      const roadName = raw.roadName || raw.name || '道路'
+      const roadName = normalized.roadName || raw.name || '道路'
       normalized.address = `${roadName} 道路`
     }
   } else if (type === 'route') {
-    normalized.routeDistanceThreshold = typeof raw.routeDistanceThreshold === 'number'
-      ? raw.routeDistanceThreshold
-      : ROUTE_NOTICE_DISTANCE_M
-    normalized.routeStart = raw.routeStart || raw.startLabel || raw.startInput || ''
-    normalized.routeEnd = raw.routeEnd || raw.endLabel || raw.endInput || ''
+    normalized.routeDistanceThreshold = typeof raw.route_distance_threshold === 'number'
+      ? raw.route_distance_threshold
+      : (typeof raw.routeDistanceThreshold === 'number' ? raw.routeDistanceThreshold : ROUTE_NOTICE_DISTANCE_M)
+    normalized.routeStart = raw.route_start || raw.routeStart || raw.startLabel || raw.startInput || ''
+    normalized.routeEnd = raw.route_end || raw.routeEnd || raw.endLabel || raw.endInput || ''
+    normalized.routeStartCoords = raw.route_start_coords || raw.routeStartCoords
+    normalized.routeEndCoords = raw.route_end_coords || raw.routeEndCoords
     if (!normalized.name) {
       const startName = normalized.routeStart || '起點'
       const endName = normalized.routeEnd || '終點'
@@ -54,14 +60,140 @@ function normalizeFavorite(raw) {
     if (!normalized.address) {
       normalized.address = normalized.name
     }
+  } else if (type === 'place') {
+    // 從 place_data 恢復地點信息
+    if (raw.place_data) {
+      Object.assign(normalized, raw.place_data)
+    }
   }
+  // 從後端字段映射到前端字段
+  if (raw.added_at) normalized.addedAt = raw.added_at
+  if (raw.notification_enabled !== undefined) normalized.notificationEnabled = raw.notification_enabled
+  if (raw.distance_threshold !== undefined) normalized.distanceThreshold = raw.distance_threshold
   return normalized
 }
 
+// 從 Flutter 獲取 user_id (UUID 字符串)
+async function getUserIdFromFlutter() {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined') {
+      resolve(null)
+      return
+    }
+    
+    let resolved = false // 防止重複 resolve
+    
+    const doResolve = (value) => {
+      if (!resolved) {
+        resolved = true
+        resolve(value)
+      }
+    }
+    
+    // 嘗試從 Flutter 獲取 user_id
+    const requestUserId = () => {
+      try {
+        if (window.flutterObject?.postMessage) {
+          window.flutterObject.postMessage(JSON.stringify({ name: 'get_user_id' }))
+        }
+      } catch (e) {
+        console.warn('Failed to request user_id from Flutter', e)
+      }
+    }
+    
+    // 監聽 Flutter 返回的 user_id
+    const handleUserIdMessage = (event) => {
+      try {
+        // 處理多種可能的消息格式
+        let msg = null
+        if (typeof event === 'string') {
+          msg = JSON.parse(event)
+        } else if (event?.data) {
+          // 可能是 WebMessage 格式
+          if (typeof event.data === 'string') {
+            msg = JSON.parse(event.data)
+          } else {
+            msg = event.data
+          }
+        } else {
+          msg = event
+        }
+        
+        // 檢查是否是 user_id 消息
+        if (msg?.name === 'user_id' && msg?.data?.user_id) {
+          const userId = msg.data.user_id
+          console.log('✅ Received user_id from Flutter:', userId)
+          
+          // 保存到 localStorage
+          try {
+            localStorage.setItem('userId', userId)
+          } catch (e) {}
+          
+          // 清理監聽器
+          if (typeof window !== 'undefined') {
+            window.removeEventListener('message', handleUserIdMessage)
+            if (window.flutterObject?.removeEventListener) {
+              window.flutterObject.removeEventListener('message', handleUserIdMessage)
+            }
+          }
+          
+          doResolve(userId)
+        }
+      } catch (e) {
+        console.warn('Error parsing user_id message:', e, event)
+      }
+    }
+    
+    // 設置監聽器
+    if (window.flutterObject?.addEventListener) {
+      window.flutterObject.addEventListener('message', handleUserIdMessage)
+    } else {
+      window.addEventListener('message', handleUserIdMessage)
+    }
+    
+    // 請求 user_id
+    requestUserId()
+    
+    // 如果 1.5 秒後還沒收到，嘗試從 localStorage 讀取（作為 fallback）
+    setTimeout(() => {
+      if (resolved) return // 已經 resolve 了，不需要 fallback
+      
+      try {
+        const stored = localStorage.getItem('userId')
+        // 檢查是否是有效的 UUID 格式（不是舊的數字格式）
+        if (stored && stored.length > 10 && stored !== '1') {
+          console.log('📦 Using stored userId from localStorage:', stored)
+          doResolve(stored)
+          return
+        } else if (stored === '1') {
+          // 清理舊的無效值
+          localStorage.removeItem('userId')
+          console.warn('⚠️ Removed invalid userId from localStorage')
+        }
+      } catch (e) {}
+      
+      // 如果還是沒有，返回 null
+      console.warn('User ID not available')
+      doResolve(null)
+    }, 1500)
+  })
+}
+
 onMounted(async () => {
-  loadSavedPlaces()
+  // 先獲取 user_id (UUID 字符串)
+  userId.value = await getUserIdFromFlutter()
+  if (userId.value && typeof window !== 'undefined') {
+    // 保存到 localStorage 作為備份
+    try {
+      localStorage.setItem('userId', userId.value) // 直接保存字符串
+    } catch (e) {}
+  }
+  
+  // 載入收藏和通知設置
+  await loadSavedPlaces()
   loadNotificationSettings()
   await loadConstructionNotices()
+  
   if (typeof window !== 'undefined') {
     window.addEventListener('map-favorites-updated', loadSavedPlaces)
   }
@@ -99,35 +231,36 @@ function selectTab(tab) {
   }
 }
 
-function readSavedPlaces() {
-  if (typeof window === 'undefined') return []
-  try {
-    const raw = localStorage.getItem(FAVORITES_STORAGE_KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
-  } catch (_) {
-    return []
+async function loadSavedPlaces() {
+  if (!userId.value) {
+    console.warn('User ID not available, cannot load favorites')
+    return
   }
-}
-
-function loadSavedPlaces() {
-  const list = readSavedPlaces()
-    .map((item) => normalizeFavorite(item))
-    .filter(Boolean)
-  list.sort((a, b) => {
-    const da = a?.addedAt ? Date.parse(a.addedAt) : 0
-    const db = b?.addedAt ? Date.parse(b.addedAt) : 0
-    return db - da
-  })
-  savedPlaces.value = list
-  expandedFavoriteIds.value = expandedFavoriteIds.value.filter((id) => list.some((place) => place.id === id))
-}
-
-function saveFavorites(list) {
-  if (typeof window === 'undefined') return
-  localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(list))
-  window.dispatchEvent(new CustomEvent('map-favorites-updated'))
+  
+  try {
+    loadingFavorites.value = true
+    const favorites = await getFavorites(userId.value) // userId 現在是 UUID 字符串
+    const list = favorites
+      .map((item) => normalizeFavorite(item))
+      .filter(Boolean)
+    // 後端已經按 added_at 倒序排列
+    savedPlaces.value = list
+    expandedFavoriteIds.value = expandedFavoriteIds.value.filter((id) => list.some((place) => place.id === id))
+    
+    // 同步通知設置
+    const notificationMap = {}
+    list.forEach(place => {
+      if (place.id && place.notificationEnabled !== undefined) {
+        notificationMap[place.id] = place.notificationEnabled
+      }
+    })
+    notificationEnabled.value = notificationMap
+  } catch (error) {
+    console.error('Failed to load favorites:', error)
+    savedPlaces.value = []
+  } finally {
+    loadingFavorites.value = false
+  }
 }
 
 function loadNotificationSettings() {
@@ -161,26 +294,55 @@ function toggleFavoriteDetails(id) {
   }
 }
 
-function removeFavorite(id) {
-  const next = savedPlaces.value.filter((place) => place.id !== id)
-  savedPlaces.value = next
-  expandedFavoriteIds.value = expandedFavoriteIds.value.filter((item) => item !== id)
-  delete notificationEnabled.value[id]
-  delete selectedCategory.value[id]
-  saveFavorites(next)
-  saveNotificationSettings()
+async function removeFavorite(id) {
+  if (!userId.value) {
+    console.warn('User ID not available, cannot delete favorite')
+    return
+  }
+  
+  try {
+    await deleteFavorite(id, userId.value) // userId 現在是 UUID 字符串
+    const next = savedPlaces.value.filter((place) => place.id !== id)
+    savedPlaces.value = next
+    expandedFavoriteIds.value = expandedFavoriteIds.value.filter((item) => item !== id)
+    delete notificationEnabled.value[id]
+    delete selectedCategory.value[id]
+    saveNotificationSettings()
+    // 觸發事件通知其他組件
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('map-favorites-updated'))
+    }
+  } catch (error) {
+    console.error('Failed to delete favorite:', error)
+    alert('刪除收藏失敗，請稍後再試')
+  }
 }
 
-function toggleNotification(placeId) {
+async function toggleNotification(placeId) {
+  if (!userId.value) {
+    console.warn('User ID not available, cannot update notification')
+    return
+  }
+  
   const wasEnabled = notificationEnabled.value[placeId] || false
-  notificationEnabled.value[placeId] = !wasEnabled
-  saveNotificationSettings()
+  const nowEnabled = !wasEnabled
+  notificationEnabled.value[placeId] = nowEnabled
+  
+  try {
+    await updateFavorite(placeId, userId.value, { // userId 現在是 UUID 字符串
+      notification_enabled: nowEnabled
+    })
+    saveNotificationSettings()
 
-  const nowEnabled = notificationEnabled.value[placeId]
-
-  // 如果剛開啟，立即檢查一次（前端即時通知）
-  if (nowEnabled) {
-    checkAndNotifyPlace(placeId, { immediate: true })
+    // 如果剛開啟，立即檢查一次（前端即時通知）
+    if (nowEnabled) {
+      checkAndNotifyPlace(placeId, { immediate: true })
+    }
+  } catch (error) {
+    console.error('Failed to update notification setting:', error)
+    // 回滾
+    notificationEnabled.value[placeId] = wasEnabled
+    alert('更新通知設置失敗，請稍後再試')
   }
 }
 

@@ -157,7 +157,7 @@ class ConstructionAlertService extends GetxService {
 
       final distanceMeters = distanceKm * 1000;
       final props = feature['properties'] as Map<String, dynamic>? ?? {};
-      final name = props['AP_NAME'] ??
+      final name = props['DIGADD'] ??
           props['場地名稱'] ??
           props['ROAD'] ??
           props['ROAD_NAME'] ??

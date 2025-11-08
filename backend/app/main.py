@@ -118,6 +118,34 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
     
+    # Initialize default user if not exists
+    logger.info("Checking default user in database...")
+    db = SessionLocal()
+    try:
+        from .models import User
+        
+        default_external_id = "7f3562f4-bb3f-4ec7-89b9-da3b4b5ff250"
+        existing_user = db.query(User).filter(User.external_id == default_external_id).first()
+        
+        if not existing_user:
+            logger.info(f"Default user with external_id {default_external_id} not found. Creating...")
+            default_user = User(
+                name="Default User",
+                external_id=default_external_id
+            )
+            db.add(default_user)
+            db.commit()
+            db.refresh(default_user)
+            logger.info(f"Default user created successfully with id: {default_user.id}")
+        else:
+            logger.info(f"Default user already exists with id: {existing_user.id}")
+    except Exception as e:
+        logger.error(f"Failed to initialize default user: {e}", exc_info=True)
+        logger.warning("Application will continue to start, but default user may be unavailable")
+        db.rollback()
+    finally:
+        db.close()
+    
     # Setup scheduled tasks using CONSTRUCTION_UPDATE_SCHEDULE
     # Parse cron schedule: "minute hour day month day_of_week"
     # Example: "0 18 * * *" = daily at 6:00 PM, "0 */6 * * *" = every 6 hours

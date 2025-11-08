@@ -6,7 +6,7 @@ import 'mapbox-gl/dist/mapbox-gl.css'
 import MapPopup from './map/MapPopup.vue'
 import TopTabs from './TopTabs.vue'
 import riskIconUrl from '../assets/icons/risk-icon.svg'
-import { suggestRoadSegments, fetchRoadSegmentsByName } from '@/service/api'
+import { suggestRoadSegments, fetchRoadSegmentsByName, createFavorite, getFavorites, deleteFavorite } from '@/service/api'
 const mapEl = ref(null)
 let map = null
 const router = useRouter()
@@ -61,9 +61,9 @@ const ROUTE_MARKERS_LAYER_ID = 'route-markers-symbols'
 
 // 快取：每個資料集 => { sourceId, layerIds, geo, bounds }
 const datasetCache = new Map()
-const FAVORITES_STORAGE_KEY = 'mapFavorites'
 const favorites = ref([])
 const selectedPlace = ref(null)
+const userId = ref(null) // 從 Flutter 獲取的用戶 ID
 const NEARBY_RADIUS_M = 1000
 const lastRoadFeatureCollection = ref(null)
 const lastRouteFeatureCollection = ref(null)
@@ -425,44 +425,188 @@ const currentFavoriteContext = computed(() => {
 
 const currentFavoriteSaved = computed(() => {
   const ctx = currentFavoriteContext.value
-  if (!ctx?.id) return false
-  return favorites.value.some((fav) => fav.id === ctx.id)
+  if (!ctx) return false
+  
+  // 根據類型匹配收藏
+  if (ctx.type === 'place' && ctx.place) {
+    return favorites.value.some((fav) => {
+      if (fav.type !== 'place') return false
+      // 比較 place_data 中的 id
+      if (ctx.place.id && fav.place_data?.id === ctx.place.id) return true
+      // 或比較座標（用於沒有 id 的地點）
+      if (fav.lon && fav.lat && ctx.place.lon && ctx.place.lat) {
+        const dist = Math.abs(fav.lon - ctx.place.lon) + Math.abs(fav.lat - ctx.place.lat)
+        return dist < 0.0001 // 約 10 公尺內的誤差
+      }
+      return false
+    })
+  }
+  
+  if (ctx.type === 'road' && ctx.name) {
+    return favorites.value.some((fav) => {
+      if (fav.type !== 'road') return false
+      // 比較道路名稱和 osmids
+      if (fav.road_name === ctx.name) {
+        if (ctx.osmids && fav.road_osmids) {
+          const ctxOsmids = Array.isArray(ctx.osmids) ? ctx.osmids.sort() : []
+          const favOsmids = Array.isArray(fav.road_osmids) ? fav.road_osmids.sort() : []
+          if (ctxOsmids.length === favOsmids.length && ctxOsmids.length > 0) {
+            return ctxOsmids.every((id, i) => id === favOsmids[i])
+          }
+        }
+        return true // 如果沒有 osmids，只比較名稱
+      }
+      return false
+    })
+  }
+  
+  if (ctx.type === 'route' && ctx.startLabel && ctx.endLabel) {
+    return favorites.value.some((fav) => {
+      if (fav.type !== 'route') return false
+      // 比較路線起點和終點
+      return fav.route_start === ctx.startLabel && fav.route_end === ctx.endLabel
+    })
+  }
+  
+  return false
 })
 
-function readFavoritesFromStorage() {
-  if (typeof window === 'undefined') return []
+// 從 Flutter 獲取 user_id（與 Home.vue 相同）
+async function getUserIdFromFlutter() {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined') {
+      resolve(null)
+      return
+    }
+    
+    let resolved = false // 防止重複 resolve
+    
+    const doResolve = (value) => {
+      if (!resolved) {
+        resolved = true
+        resolve(value)
+      }
+    }
+    
+    const requestUserId = () => {
+      try {
+        if (window.flutterObject?.postMessage) {
+          window.flutterObject.postMessage(JSON.stringify({ name: 'get_user_id' }))
+        }
+      } catch (e) {
+        console.warn('Failed to request user_id from Flutter', e)
+      }
+    }
+    
+    const handleUserIdMessage = (event) => {
+      try {
+        // 處理多種可能的消息格式
+        let msg = null
+        if (typeof event === 'string') {
+          msg = JSON.parse(event)
+        } else if (event?.data) {
+          // 可能是 WebMessage 格式
+          if (typeof event.data === 'string') {
+            msg = JSON.parse(event.data)
+          } else {
+            msg = event.data
+          }
+        } else {
+          msg = event
+        }
+        
+        // 檢查是否是 user_id 消息
+        if (msg?.name === 'user_id' && msg?.data?.user_id) {
+          const userId = msg.data.user_id
+          console.log('✅ Received user_id from Flutter:', userId)
+          
+          // 保存到 localStorage
+          try {
+            localStorage.setItem('userId', userId)
+          } catch (e) {}
+          
+          // 清理監聽器
+          if (typeof window !== 'undefined') {
+            window.removeEventListener('message', handleUserIdMessage)
+            if (window.flutterObject?.removeEventListener) {
+              window.flutterObject.removeEventListener('message', handleUserIdMessage)
+            }
+          }
+          
+          doResolve(userId)
+        }
+      } catch (e) {
+        console.warn('Error parsing user_id message:', e, event)
+      }
+    }
+    
+    if (window.flutterObject?.addEventListener) {
+      window.flutterObject.addEventListener('message', handleUserIdMessage)
+    } else {
+      window.addEventListener('message', handleUserIdMessage)
+    }
+    
+    requestUserId()
+    
+    setTimeout(() => {
+      if (resolved) return // 已經 resolve 了，不需要 fallback
+      
+      try {
+        const stored = localStorage.getItem('userId')
+        // 檢查是否是有效的 UUID 格式（不是舊的數字格式）
+        if (stored && stored.length > 10 && stored !== '1') {
+          console.log('📦 Using stored userId from localStorage:', stored)
+          doResolve(stored)
+          return
+        } else if (stored === '1') {
+          // 清理舊的無效值
+          localStorage.removeItem('userId')
+          console.warn('⚠️ Removed invalid userId from localStorage')
+        }
+      } catch (e) {}
+      
+      console.warn('User ID not available')
+      doResolve(null)
+    }, 1500)
+  })
+}
+
+async function refreshFavorites() {
+  if (!userId.value) {
+    console.warn('User ID not available, cannot load favorites')
+    return
+  }
+  
   try {
-    const raw = localStorage.getItem(FAVORITES_STORAGE_KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
-  } catch (_) {
-    return []
+    const favoritesList = await getFavorites(userId.value) // userId 現在是 UUID 字符串
+    const list = favoritesList
+      .map((item) => normalizeFavorite(item))
+      .filter(Boolean)
+    favorites.value = list
+  } catch (error) {
+    console.error('Failed to load favorites:', error)
+    favorites.value = []
   }
 }
 
-function refreshFavorites() {
-  const list = readFavoritesFromStorage()
-    .map((item) => normalizeFavorite(item))
-    .filter(Boolean)
-  list.sort((a, b) => {
-    const da = a?.addedAt ? Date.parse(a.addedAt) : 0
-    const db = b?.addedAt ? Date.parse(b.addedAt) : 0
-    return db - da
-  })
-  favorites.value = list
-}
-
-function saveFavorites(list) {
-  if (typeof window === 'undefined') return
-  localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(list))
-  window.dispatchEvent(new CustomEvent('map-favorites-updated'))
-}
-
-function removeFavoriteById(id) {
-  const next = favorites.value.filter((f) => f.id !== id)
-  favorites.value = next
-  saveFavorites(next)
+async function removeFavoriteById(id) {
+  if (!userId.value) {
+    console.warn('User ID not available, cannot delete favorite')
+    return
+  }
+  
+  try {
+    await deleteFavorite(id, userId.value) // userId 現在是 UUID 字符串
+    const next = favorites.value.filter((f) => f.id !== id)
+    favorites.value = next
+    // 觸發事件通知其他組件
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('map-favorites-updated'))
+    }
+  } catch (error) {
+    console.error('Failed to delete favorite:', error)
+    alert('刪除收藏失敗，請稍後再試')
+  }
 }
 
 async function toggleFavorite() {
@@ -473,7 +617,46 @@ async function toggleFavorite() {
   }
 
   if (currentFavoriteSaved.value) {
-    removeFavoriteById(ctx.id)
+    // 找到對應的收藏並刪除
+    let favoriteToRemove = null
+    
+    if (ctx.type === 'place' && ctx.place) {
+      favoriteToRemove = favorites.value.find((fav) => {
+        if (fav.type !== 'place') return false
+        // 比較 place_data 中的 id
+        if (ctx.place.id && fav.place_data?.id === ctx.place.id) return true
+        // 或比較座標（用於沒有 id 的地點）
+        if (fav.lon && fav.lat && ctx.place.lon && ctx.place.lat) {
+          const dist = Math.abs(fav.lon - ctx.place.lon) + Math.abs(fav.lat - ctx.place.lat)
+          return dist < 0.0001
+        }
+        return false
+      })
+    } else if (ctx.type === 'road' && ctx.name) {
+      favoriteToRemove = favorites.value.find((fav) => {
+        if (fav.type !== 'road') return false
+        if (fav.road_name === ctx.name) {
+          if (ctx.osmids && fav.road_osmids) {
+            const ctxOsmids = Array.isArray(ctx.osmids) ? ctx.osmids.sort() : []
+            const favOsmids = Array.isArray(fav.road_osmids) ? fav.road_osmids.sort() : []
+            if (ctxOsmids.length === favOsmids.length && ctxOsmids.length > 0) {
+              return ctxOsmids.every((id, i) => id === favOsmids[i])
+            }
+          }
+          return true
+        }
+        return false
+      })
+    } else if (ctx.type === 'route' && ctx.startLabel && ctx.endLabel) {
+      favoriteToRemove = favorites.value.find((fav) => {
+        if (fav.type !== 'route') return false
+        return fav.route_start === ctx.startLabel && fav.route_end === ctx.endLabel
+      })
+    }
+    
+    if (favoriteToRemove?.id) {
+      removeFavoriteById(favoriteToRemove.id)
+    }
     return
   }
 
@@ -491,9 +674,18 @@ async function toggleFavorite() {
       limit: 50,
     })
 
+    if (!userId.value) {
+      alert('無法獲取用戶 ID，請稍後再試')
+      return
+    }
+
     const payload = {
-      ...place,
       type: 'place',
+      name: place.name || place.addr || '未命名地點',
+      address: place.addr || place.name || '',
+      lon: place.lon,
+      lat: place.lat,
+      place_data: place, // 保存完整地點信息
       recommendations: nearby.map((r) => ({
         name: r.name,
         addr: r.addr,
@@ -503,12 +695,23 @@ async function toggleFavorite() {
         dsid: r.dsid,
         props: r.props || null,
       })),
-      addedAt: new Date().toISOString(),
+      notification_enabled: false,
+      distance_threshold: 100.0,
     }
 
-    const next = [...favorites.value, payload]
-    favorites.value = next
-    saveFavorites(next)
+    try {
+      const saved = await createFavorite(payload, userId.value) // userId 現在是 UUID 字符串
+      const normalized = normalizeFavorite(saved)
+      if (normalized) {
+        favorites.value = [...favorites.value, normalized]
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('map-favorites-updated'))
+        }
+      }
+    } catch (error) {
+      console.error('Failed to create favorite:', error)
+      alert('收藏失敗，請稍後再試')
+    }
     return
   }
 
@@ -521,17 +724,21 @@ async function toggleFavorite() {
     const matches = lastRoadFeatureCollection.value
       ? collectRoadConstructionMatches(lastRoadFeatureCollection.value)
       : []
+    if (!userId.value) {
+      alert('無法獲取用戶 ID，請稍後再試')
+      return
+    }
+
     const payload = {
-      id: ctx.id,
       type: 'road',
       name: ctx.name,
       address: `${ctx.name} 道路`,
       lon: ctx.center?.lon ?? null,
       lat: ctx.center?.lat ?? null,
-      roadName: ctx.name,
-      roadSearchName: ctx.keyword || ctx.name,
-      roadOsmids: ctx.osmids,
-      roadDistanceThreshold: ROAD_CONSTRUCTION_DISTANCE_THRESHOLD,
+      road_name: ctx.name,
+      road_search_name: ctx.keyword || ctx.name,
+      road_osmids: ctx.osmids,
+      road_distance_threshold: ROAD_CONSTRUCTION_DISTANCE_THRESHOLD,
       recommendations: matches.map((item) => ({
         name: item.name,
         addr: item.addr,
@@ -541,12 +748,23 @@ async function toggleFavorite() {
         dsid: item.dsid,
         props: item.props || null,
       })),
-      addedAt: new Date().toISOString(),
+      notification_enabled: false,
+      distance_threshold: 100.0,
     }
 
-    const next = [...favorites.value, payload]
-    favorites.value = next
-    saveFavorites(next)
+    try {
+      const saved = await createFavorite(payload, userId.value) // userId 現在是 UUID 字符串
+      const normalized = normalizeFavorite(saved)
+      if (normalized) {
+        favorites.value = [...favorites.value, normalized]
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('map-favorites-updated'))
+        }
+      }
+    } catch (error) {
+      console.error('Failed to create favorite:', error)
+      alert('收藏失敗，請稍後再試')
+    }
     return
   }
 
@@ -561,19 +779,23 @@ async function toggleFavorite() {
       ? collectRoadConstructionMatches(featureCollection, ROUTE_CONSTRUCTION_DISTANCE_THRESHOLD)
       : []
 
+    if (!userId.value) {
+      alert('無法獲取用戶 ID，請稍後再試')
+      return
+    }
+
     const payload = {
-      id: ctx.id,
       type: 'route',
       name: ctx.name,
       address: ctx.name,
-      routeStart: ctx.startLabel || ctx.startInput,
-      routeEnd: ctx.endLabel || ctx.endInput,
-      startCoords: ctx.startCoords || null,
-      endCoords: ctx.endCoords || null,
-      distance: typeof ctx.distance === 'number' ? ctx.distance : null,
-      duration: typeof ctx.duration === 'number' ? ctx.duration : null,
-  routeDistanceThreshold: ROUTE_CONSTRUCTION_DISTANCE_THRESHOLD,
-      routeFeatureCollection: featureCollection,
+      route_start: ctx.startLabel || ctx.startInput,
+      route_end: ctx.endLabel || ctx.endInput,
+      route_start_coords: ctx.startCoords || null,
+      route_end_coords: ctx.endCoords || null,
+      route_distance: typeof ctx.distance === 'number' ? ctx.distance : null,
+      route_duration: typeof ctx.duration === 'number' ? ctx.duration : null,
+      route_distance_threshold: ROUTE_CONSTRUCTION_DISTANCE_THRESHOLD,
+      route_feature_collection: featureCollection,
       recommendations: matches.map((item) => ({
         name: item.name,
         addr: item.addr,
@@ -583,12 +805,23 @@ async function toggleFavorite() {
         dsid: item.dsid,
         props: item.props || null,
       })),
-      addedAt: new Date().toISOString(),
+      notification_enabled: false,
+      distance_threshold: 100.0,
     }
 
-    const next = [...favorites.value, payload]
-    favorites.value = next
-    saveFavorites(next)
+    try {
+      const saved = await createFavorite(payload, userId.value) // userId 現在是 UUID 字符串
+      const normalized = normalizeFavorite(saved)
+      if (normalized) {
+        favorites.value = [...favorites.value, normalized]
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('map-favorites-updated'))
+        }
+      }
+    } catch (error) {
+      console.error('Failed to create favorite:', error)
+      alert('收藏失敗，請稍後再試')
+    }
   }
 }
 
@@ -1894,7 +2127,15 @@ function clearSearch() {
 // ===== Map 初始化 =====
 onMounted(async () => {
   await nextTick()
-  refreshFavorites()
+  // 先獲取 user_id (UUID 字符串)
+  userId.value = await getUserIdFromFlutter()
+  if (userId.value && typeof window !== 'undefined') {
+    try {
+      localStorage.setItem('userId', userId.value) // 直接保存字符串
+    } catch (e) {}
+  }
+  // 載入收藏
+  await refreshFavorites()
   if (typeof window !== 'undefined') {
     window.addEventListener('map-favorites-updated', refreshFavorites)
   }
