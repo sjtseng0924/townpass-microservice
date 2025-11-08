@@ -37,9 +37,9 @@ extension MyServiceIdExt on MyServiceItemId {
   MyServiceItem get item {
     return switch (this) {
       MyServiceItemId.microService => MyServiceItem(
-          title: '微服務',
-          description: '更多市政服務，持續開發中',
-          icon: Assets.svg.icon1999phoneS.svg(),
+          title: '施工安全通',
+          description: '提供民眾客製化的即時施工動態預警及通知',
+          icon: Assets.svg.iconSite.svg(),
           category: MyServiceCategory.cityService,
           destinationUrl: 'https://townpass-microservice.web.app',
         ),
