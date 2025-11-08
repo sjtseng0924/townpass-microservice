@@ -5,6 +5,7 @@ import mapboxgl from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import MapPopup from './map/MapPopup.vue'
 import TopTabs from './TopTabs.vue'
+import riskIconUrl from '../assets/icons/risk-icon.svg'
 
 const mapEl = ref(null)
 let map = null
@@ -49,6 +50,7 @@ const datasetCache = new Map()
 const FAVORITES_STORAGE_KEY = 'mapFavorites'
 const favorites = ref([])
 const selectedPlace = ref(null)
+const NEARBY_RADIUS_M = 1000
 
 function handleTabSelect(tab) {
   if (tab === 'recommend') {
@@ -115,7 +117,7 @@ function showNearbyItemPopup(item) {
   
   // 飛到該位置（使用 padding 讓目標點不在正中心）
   flyToLngLat(item.lon, item.lat, 16, { bottom: 250 })
-  
+  // map.flyTo({ center: [item.lon, item.lat], zoom: 16 })
   // 創建並顯示 popup
   const props = item.props || {}
   const datasetId = item.dsid || 'attraction' // 從 item 中取得資料集 ID
@@ -505,9 +507,178 @@ function collectNearbyPoints(lon, lat, options = {}) {
   return limit ? results.slice(0, limit) : results
 }
 
+
+function destPoint(lon, lat, bearingDeg, distanceMeters) {
+  // returns [lon, lat]
+  const R = 6371000
+  const brng = bearingDeg * Math.PI / 180
+  const d = distanceMeters / R
+  const lat1 = lat * Math.PI / 180
+  const lon1 = lon * Math.PI / 180
+
+  const lat2 = Math.asin(Math.sin(lat1) * Math.cos(d) + Math.cos(lat1) * Math.sin(d) * Math.cos(brng))
+  const lon2 = lon1 + Math.atan2(Math.sin(brng) * Math.sin(d) * Math.cos(lat1), Math.cos(d) - Math.sin(lat1) * Math.sin(lat2))
+  return [ (lon2 * 180 / Math.PI), (lat2 * 180 / Math.PI) ]
+}
+
+function createCircleGeoJSON(lon, lat, radiusMeters, steps = 64) {
+  const coords = []
+  for (let i = 0; i < steps; i++) {
+    const bearing = (i / steps) * 360
+    coords.push(destPoint(lon, lat, bearing, radiusMeters))
+  }
+  coords.push(coords[0])
+  return {
+    type: 'FeatureCollection',
+    features: [ { type: 'Feature', geometry: { type: 'Polygon', coordinates: [coords] }, properties: {} } ]
+  }
+}
+
+function ensureNearbyCircleLayer() {
+  if (!map) return
+  if (!map.getSource('nearby-circle')) {
+    map.addSource('nearby-circle', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+  }
+  if (!map.getLayer('nearby-circle-fill')) {
+    map.addLayer({
+      id: 'nearby-circle-fill',
+      type: 'fill',
+      source: 'nearby-circle',
+      paint: { 'fill-color': '#06b6d4', 'fill-opacity': 0.08 },
+      layout: { visibility: 'visible' }
+    })
+  }
+  if (!map.getLayer('nearby-circle-outline')) {
+    map.addLayer({
+      id: 'nearby-circle-outline',
+      type: 'line',
+      source: 'nearby-circle',
+      paint: { 'line-color': '#06b6d4', 'line-width': 2 },
+      layout: { visibility: 'visible' }
+    })
+  }
+
+  // points (施工) highlight source/layer
+  if (!map.getSource('nearby-points-highlight')) {
+    map.addSource('nearby-points-highlight', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+  }
+  // register risk icon and add symbol layer using the image
+  if (!map.getLayer('nearby-points-highlight-symbol')) {
+    const addRiskLayer = () => {
+      if (!map.getLayer('nearby-points-highlight-symbol')) {
+        map.addLayer({
+          id: 'nearby-points-highlight-symbol',
+          type: 'symbol',
+          source: 'nearby-points-highlight',
+          layout: {
+            'icon-image': 'risk-icon',
+            'icon-size': 0.13,
+            'icon-allow-overlap': true,
+            'icon-ignore-placement': true
+          }
+        })
+        attachPopupInteraction('nearby-points-highlight-symbol', 'construction')
+      }
+    }
+
+    try {
+      if (!map.hasImage || !map.hasImage('risk-icon')) {
+        const img = new Image()
+        img.crossOrigin = 'anonymous'
+        img.onload = () => {
+          try { map.addImage('risk-icon', img) } catch (_) {}
+          addRiskLayer()
+        }
+        img.src = riskIconUrl
+      } else {
+        addRiskLayer()
+      }
+    } catch (_) {
+      // fallback: still try to add the layer (may render empty until image available)
+      addRiskLayer()
+    }
+  }
+
+  // lines (窄巷) highlight source/layer
+  if (!map.getSource('nearby-lines-highlight')) {
+    map.addSource('nearby-lines-highlight', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+  }
+  if (!map.getLayer('nearby-lines-highlight')) {
+    map.addLayer({
+      id: 'nearby-lines-highlight',
+      type: 'line',
+      source: 'nearby-lines-highlight',
+      paint: { 'line-color': '#7c3aed', 'line-width': 4, 'line-opacity': 0.9 }
+    })
+    attachPopupInteraction('nearby-lines-highlight', 'narrow_street')
+  }
+
+  // center marker (藍色圓心)
+  if (!map.getSource('nearby-center')) {
+    map.addSource('nearby-center', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+  }
+  if (!map.getLayer('nearby-center-circle')) {
+    map.addLayer({
+      id: 'nearby-center-circle',
+      type: 'circle',
+      source: 'nearby-center',
+      paint: {
+        'circle-radius': 8,
+        'circle-color': '#2563eb',
+        'circle-stroke-width': 2,
+        'circle-stroke-color': '#ffffff'
+      }
+    })
+  }
+}
+
+function updateCircleAndHighlights(centerLon, centerLat) {
+  if (!map) return
+  ensureNearbyCircleLayer()
+  const circle = createCircleGeoJSON(centerLon, centerLat, NEARBY_RADIUS_M, 96)
+  map.getSource('nearby-circle')?.setData(circle)
+
+  // 更新圓心位置
+  const centerGeo = { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'Point', coordinates: [centerLon, centerLat] }, properties: {} }] }
+  map.getSource('nearby-center')?.setData(centerGeo)
+
+  // collect nearby features from datasetCache
+  const pointFeatures = []
+  const lineFeatures = []
+  for (const [dsid, cache] of datasetCache.entries()) {
+    if (!cache || !cache.geo) continue
+    // only include construction (points) and narrow_street (lines) — but support both types
+    for (const f of cache.geo.features || []) {
+      if (!f || !f.geometry) continue
+      const g = f.geometry
+      if (g.type === 'Point') {
+        const [flon, flat] = g.coordinates
+        if (distM(centerLon, centerLat, flon, flat) <= NEARBY_RADIUS_M) {
+          pointFeatures.push({ type: 'Feature', geometry: g, properties: { ...f.properties, _dsid: dsid } })
+        }
+      } else if (g.type === 'LineString' || g.type === 'MultiLineString') {
+        // include line if any vertex within radius
+        const coordsArray = g.type === 'LineString' ? [g.coordinates] : g.coordinates
+        let included = false
+        for (const ring of coordsArray) {
+          for (const c of ring) {
+            const [flon, flat] = c
+            if (distM(centerLon, centerLat, flon, flat) <= NEARBY_RADIUS_M) { included = true; break }
+          }
+          if (included) break
+        }
+        if (included) lineFeatures.push({ type: 'Feature', geometry: g, properties: { ...f.properties, _dsid: dsid } })
+      }
+    }
+  }
+  map.getSource('nearby-points-highlight')?.setData({ type: 'FeatureCollection', features: pointFeatures })
+  map.getSource('nearby-lines-highlight')?.setData({ type: 'FeatureCollection', features: lineFeatures })
+}
+
 // 1km 內據點（尊重「目前可見資料集」與行政區 filter）
 function computeNearby(lon, lat) {
   nearbyList.value = collectNearbyPoints(lon, lat, { limit: 50 })
+    try { updateCircleAndHighlights(lon, lat) } catch (_) {}
 }
 
 function getCurrentCenterLonLat() {
