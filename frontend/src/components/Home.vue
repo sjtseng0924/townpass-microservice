@@ -2,7 +2,25 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import TopTabs from './TopTabs.vue'
+import { hello, echo, listUsers, createUser, listTestRecords, createTestRecord, getConstructionData, updateConstructionData } from '@/service/api'
 
+const hi = ref(null)          // GET /api/hello 回傳
+const echoMsg = ref('ping')   // POST /api/echo 輸入
+const echoResp = ref(null)    // POST /api/echo 回傳
+
+const users = ref([])         // GET /api/users 回傳
+const newName = ref('Alice')  // POST /api/users 的 name
+
+const tests = ref([])         // GET /api/test_records 回傳
+const newTestTitle = ref('Sample title')
+const newTestDescription = ref('A short description')
+
+const constructionData = ref(null)  // GET /api/construction/geojson 回傳
+const constructionUpdateStatus = ref(null)  // GET /api/construction/update 回傳
+const constructionLoading = ref(false)
+
+const loading = ref(false)
+const error = ref('')
 const router = useRouter()
 const currentTab = ref('recommend')
 const savedPlaces = ref([])
@@ -12,7 +30,19 @@ const selectedCategory = ref({}) // { [placeId]: 'attraction' | 'construction' }
 const FAVORITES_STORAGE_KEY = 'mapFavorites'
 const NOTIFICATION_STORAGE_KEY = 'placeNotifications'
 
-onMounted(() => {
+onMounted(async () => {
+  try {
+    loading.value = true
+    error.value = ''
+    hi.value = await hello()
+    users.value = await listUsers()
+    tests.value = await listTestRecords()
+    await loadConstructionData()
+  } catch (e) {
+    error.value = e?.message || String(e)
+  } finally {
+    loading.value = false
+  }
   loadSavedPlaces()
   loadNotificationSettings()
   if (typeof window !== 'undefined') {
@@ -174,6 +204,34 @@ function formatDistance(meters) {
     return `${km >= 10 ? km.toFixed(0) : km.toFixed(1)} 公里`
   }
   return `${Math.round(meters)} 公尺`
+}
+
+async function loadConstructionData() {
+  try {
+    constructionLoading.value = true
+    error.value = ''
+    constructionData.value = await getConstructionData()
+  } catch (e) {
+    error.value = e?.message || String(e)
+    constructionData.value = null
+  } finally {
+    constructionLoading.value = false
+  }
+}
+
+async function triggerConstructionUpdate() {
+  try {
+    constructionLoading.value = true
+    error.value = ''
+    constructionUpdateStatus.value = await updateConstructionData()
+    // 更新後重新載入數據
+    await loadConstructionData()
+  } catch (e) {
+    error.value = e?.message || String(e)
+    constructionUpdateStatus.value = null
+  } finally {
+    constructionLoading.value = false
+  }
 }
 </script>
 

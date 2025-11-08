@@ -34,10 +34,11 @@ const districtOptions = ref([])
 const TPE_CENTER = [121.5654, 25.0330]
 const TPE_BBOX = '121.457,24.955,121.654,25.201'
 
-// ====== 資料集（移除無障礙，只保留景點與施工） ======
+// ====== 資料集（全部顯示） ======
+const API_BASE = import.meta.env.VITE_API_BASE || ''
 const datasets = ref([
   { id: 'attraction',    name: '景點',       url: '/mapData/attraction_tpe.geojson',     color: '#f59e0b', outline: '#92400e', visible: true },
-  { id: 'construction',  name: '施工地點',   url: '/mapData/construction.geojson',       color: '#ef4444', outline: '#7f1d1d', visible: true },
+  { id: 'construction',    name: '施工地點',       url: `${API_BASE}/api/construction/geojson`,     color: '#ef4444', outline: '#7f1d1d', visible: true },
 ])
 
 // 快取：每個資料集 => { sourceId, layerIds, geo, bounds }

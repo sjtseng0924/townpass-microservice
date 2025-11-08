@@ -33,3 +33,9 @@ export const createTestRecord = (p) =>
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(p)
   }).then(r=>r.json())
+
+export const getConstructionData = () =>
+  fetch(`${BASE}/api/construction/geojson`).then(r=>r.json())
+
+export const updateConstructionData = () =>
+  fetch(`${BASE}/api/construction/update`).then(r=>r.json())

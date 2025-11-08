@@ -1,13 +1,96 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+import logging
 from .database import Base, engine
 from .routers.api import router
+from .config import settings
+from .services.construction_scraper import update_construction_geojson_file
+import os
+
+logger = logging.getLogger(__name__)
+
+# Initialize scheduler
+scheduler = BackgroundScheduler()
+
+def scheduled_update():
+    """Scheduled task to update construction.geojson file"""
+    logger.info(f"Running scheduled construction data update...")
+    # Ensure data directory exists
+    data_dir = os.path.dirname(settings.CONSTRUCTION_GEOJSON_PATH)
+    os.makedirs(data_dir, exist_ok=True)
+    
+    success = update_construction_geojson_file(settings.CONSTRUCTION_GEOJSON_PATH)
+    if success:
+        logger.info("Scheduled update completed successfully")
+    else:
+        logger.error("Scheduled update failed")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup and shutdown events"""
+    # Startup
+    logger.info("Starting up...")
+    
+    # Ensure data directory exists
+    data_dir = os.path.dirname(settings.CONSTRUCTION_GEOJSON_PATH)
+    os.makedirs(data_dir, exist_ok=True)
+    
+    # Run initial update on startup (create/update file)
+    logger.info("Running initial construction data update on startup...")
+    try:
+        update_construction_geojson_file(settings.CONSTRUCTION_GEOJSON_PATH)
+    except Exception as e:
+        logger.error(f"Initial update failed: {e}", exc_info=True)
+    
+    # Setup scheduled task
+    # Parse cron schedule: "minute hour day month day_of_week"
+    # Example: "0 2 * * *" = daily at 2:00 AM
+    schedule_parts = settings.CONSTRUCTION_UPDATE_SCHEDULE.split()
+    if len(schedule_parts) == 5:
+        minute, hour, day, month, day_of_week = schedule_parts
+        scheduler.add_job(
+            scheduled_update,
+            trigger=CronTrigger(
+                minute=minute,
+                hour=hour,
+                day=day,
+                month=month,
+                day_of_week=day_of_week
+            ),
+            id="construction_update",
+            name="Update construction.geojson",
+            replace_existing=True
+        )
+        logger.info(f"Scheduled construction data update: {settings.CONSTRUCTION_UPDATE_SCHEDULE}")
+    else:
+        logger.warning(f"Invalid schedule format: {settings.CONSTRUCTION_UPDATE_SCHEDULE}. Using default: daily at 2 AM")
+        scheduler.add_job(
+            scheduled_update,
+            trigger=CronTrigger(hour=2, minute=0),
+            id="construction_update",
+            name="Update construction.geojson",
+            replace_existing=True
+        )
+    
+    scheduler.start()
+    logger.info("Scheduler started")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down...")
+    scheduler.shutdown()
+    logger.info("Scheduler stopped")
 
 app = FastAPI(
     title="Taipei Hackathon Microservice",
     version="1.0.0",
     docs_url="/docs",
     openapi_url="/docs/openapi.json",
+    lifespan=lifespan,
 )
 
 origins = [
