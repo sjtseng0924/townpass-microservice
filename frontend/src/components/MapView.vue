@@ -105,7 +105,21 @@ function createMapPopup(properties, datasetId, lngLat) {
   if (!map) return null
   
   const container = document.createElement('div')
-  const app = createApp(MapPopup, { properties, datasetId })
+  const lon = Array.isArray(lngLat) ? lngLat[0] : lngLat.lng
+  const lat = Array.isArray(lngLat) ? lngLat[1] : lngLat.lat
+  
+  const app = createApp(MapPopup, { 
+    properties, 
+    datasetId,
+    lon,
+    lat
+  })
+  
+  // 監聽收藏更新事件，刷新收藏列表
+  app.config.globalProperties.$onFavoriteUpdated = () => {
+    refreshFavorites()
+  }
+  
   app.mount(container)
   
   const popup = new mapboxgl.Popup({
@@ -116,7 +130,13 @@ function createMapPopup(properties, datasetId, lngLat) {
     .setDOMContent(container)
     .addTo(map)
   
-  popup.on('close', () => app.unmount())
+  popup.on('close', () => {
+    app.unmount()
+    // 觸發收藏更新事件，讓主組件刷新收藏列表
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('map-favorites-updated'))
+    }
+  })
   
   return popup
 }
@@ -471,11 +491,14 @@ const currentFavoriteSaved = computed(() => {
   return false
 })
 
+// 測試用的預設 user_id（當沒有 Flutter 環境時使用）
+const DEFAULT_TEST_USER_ID = '7f3562f4-bb3f-4ec7-89b9-da3b4b5ff250'
+
 // 從 Flutter 獲取 user_id（與 Home.vue 相同）
 async function getUserIdFromFlutter() {
   return new Promise((resolve) => {
     if (typeof window === 'undefined') {
-      resolve(null)
+      resolve(DEFAULT_TEST_USER_ID) // 在非瀏覽器環境也返回預設值
       return
     }
     
@@ -565,8 +588,12 @@ async function getUserIdFromFlutter() {
         }
       } catch (e) {}
       
-      console.warn('User ID not available')
-      doResolve(null)
+      // 如果還是沒有，使用測試用的預設值（開發/測試環境）
+      console.warn('⚠️ 無法從 Flutter 獲取 user_id，使用測試用的預設值')
+      try {
+        localStorage.setItem('userId', DEFAULT_TEST_USER_ID)
+      } catch (e) {}
+      doResolve(DEFAULT_TEST_USER_ID)
     }, 1500)
   })
 }

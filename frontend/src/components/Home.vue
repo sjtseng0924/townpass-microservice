@@ -73,11 +73,14 @@ function normalizeFavorite(raw) {
   return normalized
 }
 
+// 測試用的預設 user_id（當沒有 Flutter 環境時使用）
+const DEFAULT_TEST_USER_ID = '7f3562f4-bb3f-4ec7-89b9-da3b4b5ff250'
+
 // 從 Flutter 獲取 user_id (UUID 字符串)
 async function getUserIdFromFlutter() {
   return new Promise((resolve) => {
     if (typeof window === 'undefined') {
-      resolve(null)
+      resolve(DEFAULT_TEST_USER_ID) // 在非瀏覽器環境也返回預設值
       return
     }
     
@@ -172,9 +175,12 @@ async function getUserIdFromFlutter() {
         }
       } catch (e) {}
       
-      // 如果還是沒有，返回 null
-      console.warn('User ID not available')
-      doResolve(null)
+      // 如果還是沒有，使用測試用的預設值（開發/測試環境）
+      console.warn('⚠️ 無法從 Flutter 獲取 user_id，使用測試用的預設值')
+      try {
+        localStorage.setItem('userId', DEFAULT_TEST_USER_ID)
+      } catch (e) {}
+      doResolve(DEFAULT_TEST_USER_ID)
     }, 1500)
   })
 }
