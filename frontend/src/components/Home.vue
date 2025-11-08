@@ -9,6 +9,9 @@ const currentTab = ref('recommend')
 const savedPlaces = ref([])
 const expandedFavoriteIds = ref([])
 const notificationEnabled = ref({}) // { [placeId]: boolean }
+// 每個收藏最近一次發送通知的時間戳，避免過度頻繁（若希望每 5 分鐘都重發可刪除此 map 判斷）
+const lastNotifyAt = ref({}) // { [placeId]: number }
+let notificationPollTimer = null
 const selectedCategory = ref({}) // { [placeId]: 'attraction' | 'construction' }
 const FAVORITES_STORAGE_KEY = 'mapFavorites'
 const NOTIFICATION_STORAGE_KEY = 'placeNotifications'
@@ -19,11 +22,17 @@ onMounted(async () => {
   if (typeof window !== 'undefined') {
     window.addEventListener('map-favorites-updated', loadSavedPlaces)
   }
+  // 啟動每 5 分鐘輪詢
+  startNotificationPolling()
 })
 
 onBeforeUnmount(() => {
   if (typeof window !== 'undefined') {
     window.removeEventListener('map-favorites-updated', loadSavedPlaces)
+  }
+  if (notificationPollTimer) {
+    clearInterval(notificationPollTimer)
+    notificationPollTimer = null
   }
 })
 
@@ -118,28 +127,52 @@ function removeFavorite(id) {
 function toggleNotification(placeId) {
   notificationEnabled.value[placeId] = !notificationEnabled.value[placeId]
   saveNotificationSettings()
-  const place = savedPlaces.value.find(p => p.id === placeId)
   const enabled = notificationEnabled.value[placeId]
-  // 發送 watch/unwatch 訊息給 Flutter，啟用或停止監控附近施工地點
+  if (enabled) {
+    // 立即檢查一次並可能發送通知
+    checkAndNotifyPlace(placeId, { immediate: true })
+  }
+}
+
+function startNotificationPolling() {
+  if (notificationPollTimer) return
+  // 每 5 分鐘（300000 ms）輪詢一次
+  notificationPollTimer = setInterval(() => {
+    for (const place of savedPlaces.value) {
+      if (notificationEnabled.value[place.id]) {
+        checkAndNotifyPlace(place.id, { immediate: false })
+      }
+    }
+  }, 300000)
+}
+
+function checkAndNotifyPlace(placeId, { immediate = false } = {}) {
+  const place = savedPlaces.value.find(p => p.id === placeId)
+  if (!place) return
+  const recs = Array.isArray(place.recommendations) ? place.recommendations : []
+  const constructionCount = recs.filter(r => r?.dsid === 'construction' || (r?.props && (r.props.AP_NAME || r.props.PURP))).length
+  if (constructionCount <= 0) return
+
+  const now = Date.now()
+  const lastTs = lastNotifyAt.value[placeId] || 0
+  // 若 immediate 則忽略時間間隔；非 immediate 時需至少間隔 4 分鐘 (240000ms) 避免過度噪音
+  if (!immediate && (now - lastTs) < 240000) return
+
   try {
-    const payload = enabled ? {
-      name: 'watch',
+    const payload = {
+      name: 'notify',
       data: {
-        id: placeId,
-        name: place?.name || '未命名地點',
-        lon: place?.lon,
-        lat: place?.lat,
-      },
-    } : {
-      name: 'unwatch',
-      data: {
-        id: placeId,
+        title: `${place.name || '收藏地點'} 附近施工資訊`,
+        content: `此收藏 1 公里內仍有 ${constructionCount} 個施工地點`,
       },
     }
     if (typeof window !== 'undefined' && window.flutterObject?.postMessage) {
       window.flutterObject.postMessage(JSON.stringify(payload))
+      lastNotifyAt.value[placeId] = now
     }
-  } catch (_) {}
+  } catch (e) {
+    console.warn('Failed to send notify message', e)
+  }
 }
 
 function selectCategoryForPlace(placeId, category) {

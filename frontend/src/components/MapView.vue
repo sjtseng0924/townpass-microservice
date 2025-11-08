@@ -37,8 +37,9 @@ const TPE_BBOX = '121.457,24.955,121.654,25.201'
 // ====== 資料集（全部顯示） ======
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 const datasets = ref([
-  { id: 'attraction',    name: '景點',       url: '/mapData/attraction_tpe.geojson',     color: '#f59e0b', outline: '#92400e', visible: true },
-  { id: 'construction',    name: '施工地點',       url: `${API_BASE}/api/construction/geojson`,     color: '#ef4444', outline: '#7f1d1d', visible: true },
+  { id: 'attraction', name: '景點', url: '/mapData/attraction_tpe.geojson', color: '#f59e0b', outline: '#92400e', visible: true, includeNearby: true },
+  { id: 'construction', name: '施工地點', url: `${API_BASE}/api/construction/geojson`, color: '#ef4444', outline: '#7f1d1d', visible: true, includeNearby: true },
+  { id: 'alley', name: '巷弄線圖', url: '/mapData/matched_alley_lines.geojson', color: '#64748b', outline: '#475569', visible: true, includeNearby: false },
 ])
 
 // 快取：每個資料集 => { sourceId, layerIds, geo, bounds }
@@ -112,11 +113,14 @@ async function ensureDatasetLoaded(ds) {
     attachPopupInteraction(lid)
   } else if (geomType.includes('Line')) {
     const lid = `${ds.id}-lines`
+    const paint = ds.id === 'alley'
+      ? { 'line-color': ds.color, 'line-width': 3, 'line-opacity': 0.9 }
+      : { 'line-color': ds.color, 'line-width': 2 }
     map.addLayer({
       id: lid,
       type: 'line',
       source: sourceId,
-      paint: { 'line-color': ds.color, 'line-width': 2 },
+      paint,
       layout: { visibility: ds.visible ? 'visible' : 'none' }
     })
     layerIds.push(lid)
@@ -401,6 +405,8 @@ function collectNearbyPoints(lon, lat, options = {}) {
   const results = []
   for (const ds of datasets.value) {
     if (respectVisibility && !ds.visible) continue
+    // 這個資料集不參與「附近推薦」
+    if (ds.includeNearby === false) continue
     const cache = datasetCache.get(ds.id)
     if (!cache) continue
     const feats = cache.geo?.features || []
@@ -783,6 +789,7 @@ onBeforeUnmount(() => {
                       <option value="all">全部</option>
                       <option value="attraction">景點</option>
                       <option value="construction">施工地點</option>
+                      <option value="alley">巷弄線圖</option>
                     </select>
                   </div>
                 </div>
