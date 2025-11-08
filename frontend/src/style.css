@@ -1,4 +1,123 @@
 @import "tailwindcss";
 
+:root {
+	--tp-primary-50: #EDF8FA;
+	--tp-primary-100: #DBF1F5;
+	--tp-primary-200: #B4E2EA;
+	--tp-primary-300: #93D4DF;
+	--tp-primary-400: #71C5D5;
+	--tp-primary-500: #5AB4C5;
+	--tp-primary-600: #468D9B;
+	--tp-primary-700: #356C77;
+	--tp-primary-800: #22474E;
+	--tp-primary-900: #112629;
+	--tp-primary-950: #081315;
+
+	--tp-secondary-50: #FDF8ED;
+	--tp-secondary-100: #FCF2DF;
+	--tp-secondary-200: #F8E3BC;
+	--tp-secondary-300: #F4D69E;
+	--tp-secondary-400: #F0C87C;
+	--tp-secondary-500: #F5BA4B;
+
+	--tp-alarm-300: #E29494;
+	--tp-alarm-500: #D45251;
+	--tp-reminder-300: #F4B992;
+	--tp-reminder-500: #FDB53A;
+
+	--tp-surface-white: #FFFFFF;
+	--tp-surface-grey-50: #E3E7E9;
+	--tp-focus-ring: rgba(90, 180, 197, 0.35);
+}
+
+.tp-focus-outline:focus,
+.tp-focus-outline:focus-visible {
+	outline: none;
+	border-color: var(--tp-primary-500) !important;
+	box-shadow: 0 0 0 3px var(--tp-focus-ring);
+}
+
+.tp-search-btn {
+	border: 1px solid var(--tp-primary-500);
+	background-color: var(--tp-primary-500);
+	color: #ffffff;
+	transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.tp-search-btn:hover:not(:disabled) {
+	background-color: var(--tp-primary-600);
+	border-color: var(--tp-primary-600);
+}
+
+.tp-search-btn:disabled {
+	background-color: var(--tp-primary-100);
+	border-color: var(--tp-primary-100);
+	color: var(--tp-primary-500);
+	cursor: not-allowed;
+}
+
+.tp-swap-btn {
+	border: 1px solid var(--tp-primary-200);
+	background-color: #ffffff;
+	color: var(--tp-primary-700);
+	transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.tp-swap-btn:hover:not(:disabled) {
+	background-color: var(--tp-primary-50);
+	border-color: var(--tp-primary-300);
+}
+
+.tp-swap-btn:disabled {
+	border-color: #E5E7EB;
+	color: #D1D5DB;
+	cursor: not-allowed;
+}
+
+.tp-suggestion:hover {
+	background-color: var(--tp-primary-50);
+}
+
+.tp-icon-btn {
+	background-color: #ffffff;
+	color: #475259;
+	transition: background-color 150ms ease, color 150ms ease;
+}
+
+.tp-icon-btn:hover {
+	background-color: #f3f5f6;
+	color: #475259;
+}
+
+.tp-icon-btn:focus,
+.tp-icon-btn:focus-visible {
+	outline: none;
+	color: #5AB4C5;
+}
+
+.tp-icon-btn--active {
+	background-color: #ffffff;
+	color: #5AB4C5;
+}
+
+.tp-link {
+	color: var(--tp-primary-600);
+	transition: color 150ms ease;
+}
+
+.tp-link:hover {
+	color: var(--tp-primary-700);
+}
+
+.tp-checkbox {
+	accent-color: var(--tp-primary-500);
+}
+
+.tp-checkbox:focus,
+.tp-checkbox:focus-visible {
+	outline: none;
+	box-shadow: 0 0 0 2px var(--tp-focus-ring);
+}
+
 /* Optional app shell sizing if needed */
 html, body, #app { height: 100%; }

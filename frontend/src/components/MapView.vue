@@ -5,7 +5,8 @@ import mapboxgl from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import MapPopup from './map/MapPopup.vue'
 import TopTabs from './TopTabs.vue'
-import riskIconUrl from '../assets/icons/risk-icon.svg'
+import redRiskIconUrl from '../assets/icons/red-risk-icon.svg'
+import yellowRiskIconUrl from '../assets/icons/yellow-risk-icon.svg'
 import { suggestRoadSegments, fetchRoadSegmentsByName, createFavorite, getFavorites, deleteFavorite } from '@/service/api'
 const mapEl = ref(null)
 let map = null
@@ -58,6 +59,42 @@ const ROUTE_SOURCE_ID = 'route-navigation'
 const ROUTE_LAYER_ID = 'route-line'
 const ROUTE_MARKERS_SOURCE_ID = 'route-markers'
 const ROUTE_MARKERS_LAYER_ID = 'route-markers-symbols'
+
+const mapImagePromises = new Map()
+
+function ensureMapImage(imageId, url) {
+  if (!map) return Promise.resolve(false)
+  try {
+    if (typeof map.hasImage === 'function' && map.hasImage(imageId)) {
+      return Promise.resolve(true)
+    }
+  } catch (_) {
+    // ignore hasImage errors and continue loading
+  }
+
+  if (mapImagePromises.has(imageId)) {
+    return mapImagePromises.get(imageId)
+  }
+
+  const promise = new Promise((resolve) => {
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => {
+      try {
+        map.addImage(imageId, img)
+        resolve(true)
+      } catch (err) {
+        console.warn(`Failed to register map image: ${imageId}`, err)
+        resolve(false)
+      }
+    }
+    img.onerror = () => resolve(false)
+    img.src = url
+  })
+
+  mapImagePromises.set(imageId, promise)
+  return promise
+}
 
 // 快取：每個資料集 => { sourceId, layerIds, geo, bounds }
 const datasetCache = new Map()
@@ -141,15 +178,13 @@ function createMapPopup(properties, datasetId, lngLat) {
   return popup
 }
 
-function attachPopupInteraction(layerId, datasetId) {
+function attachPopupInteraction(layerId, datasetIdOverride = null) {
   map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer' })
   map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = '' })
   map.on('click', layerId, (e) => {
     const feature = e?.features?.[0]
     if (!feature) return
     const props = feature.properties || {}
-    const [lon, lat] = e.lngLat.toArray()
-    
     // 設置 selectedPlace，以便可以收藏
     if (datasetId === 'construction') {
       // 對於 construction 類型，使用 DIGADD 和 PURP 字段
@@ -162,7 +197,6 @@ function attachPopupInteraction(layerId, datasetId) {
       const addr = props['地址'] || props['address'] || props['addr'] || ''
       pickSelectedPlace({ lon, lat, place: name, addr, props })
     }
-    
     createMapPopup(props, datasetId, e.lngLat)
   })
 }
@@ -227,18 +261,42 @@ async function ensureDatasetLoaded(ds) {
 
   if (geomType.includes('Point')) {
     const lid = `${ds.id}-points`
-    map.addLayer({
-      id: lid,
-      type: 'circle',
-      source: sourceId,
-      paint: {
-        'circle-radius': 6,
-        'circle-color': ds.color,
-        'circle-stroke-width': 1,
-        'circle-stroke-color': ds.outline
-      },
-      layout: { visibility: ds.visible ? 'visible' : 'none' }
-    })
+    let added = false
+
+    if (ds.id === 'construction') {
+      const iconReady = await ensureMapImage('construction-icon-red', redRiskIconUrl)
+      if (iconReady) {
+        map.addLayer({
+          id: lid,
+          type: 'symbol',
+          source: sourceId,
+          layout: {
+            visibility: ds.visible ? 'visible' : 'none',
+            'icon-image': 'construction-icon-yellow',
+            'icon-size': 0.24,
+            'icon-allow-overlap': true,
+            'icon-ignore-placement': true
+          }
+        })
+        added = true
+      }
+    }
+
+    if (!added) {
+      map.addLayer({
+        id: lid,
+        type: 'circle',
+        source: sourceId,
+        paint: {
+          'circle-radius': 6,
+          'circle-color': ds.color,
+          'circle-stroke-width': 1,
+          'circle-stroke-color': ds.outline
+        },
+        layout: { visibility: ds.visible ? 'visible' : 'none' }
+      })
+    }
+
     layerIds.push(lid)
     attachPopupInteraction(lid, ds.id)
   } else if (geomType.includes('Line')) {
@@ -977,11 +1035,11 @@ async function performRouteSearch() {
   try {
     console.log('開始路線規劃:', { start, end })
     
-    // 1. 先將起點和終點轉換成座標
-    const startCoords = await geocodePlaceInTaipei(start)
+  // 1. 先將起點和終點轉換成座標（優先使用本地景點資料集，找不到再回落 Mapbox）
+  const startCoords = await resolvePlaceCoordinates(start)
     console.log('起點座標:', startCoords)
-    
-    const endCoords = await geocodePlaceInTaipei(end)
+
+  const endCoords = await resolvePlaceCoordinates(end)
     console.log('終點座標:', endCoords)
 
     if (!startCoords) {
@@ -1225,7 +1283,7 @@ function ensureUserLayer() {
       source: 'user-location',
       paint: {
         'circle-radius': 8,
-        'circle-color': '#2563eb',
+        'circle-color': '#5AB4C5',
         'circle-stroke-width': 2,
         'circle-stroke-color': '#ffffff'
       }
@@ -1301,7 +1359,7 @@ function ensureSearchMarkerLayer() {
       source: 'search-target',
       paint: {
         'circle-radius': 9,
-        'circle-color': '#ef4444',
+        'circle-color': '#5AB4C5',
         'circle-stroke-width': 2,
         'circle-stroke-color': '#ffffff'
       }
@@ -1464,15 +1522,15 @@ function ensureNearbyCircleLayer() {
   }
   // register risk icon and add symbol layer using the image
   if (!map.getLayer('nearby-points-highlight-symbol')) {
-    const addRiskLayer = () => {
+    const addHighlightLayer = () => {
       if (!map.getLayer('nearby-points-highlight-symbol')) {
         map.addLayer({
           id: 'nearby-points-highlight-symbol',
           type: 'symbol',
           source: 'nearby-points-highlight',
           layout: {
-            'icon-image': 'risk-icon',
-            'icon-size': 0.13,
+            'icon-image': 'construction-icon-red',
+            'icon-size': 0.24,
             'icon-allow-overlap': true,
             'icon-ignore-placement': true
           }
@@ -1481,22 +1539,9 @@ function ensureNearbyCircleLayer() {
       }
     }
 
-    try {
-      if (!map.hasImage || !map.hasImage('risk-icon')) {
-        const img = new Image()
-        img.crossOrigin = 'anonymous'
-        img.onload = () => {
-          try { map.addImage('risk-icon', img) } catch (_) {}
-          addRiskLayer()
-        }
-        img.src = riskIconUrl
-      } else {
-        addRiskLayer()
-      }
-    } catch (_) {
-      // fallback: still try to add the layer (may render empty until image available)
-      addRiskLayer()
-    }
+    ensureMapImage('construction-icon-yellow', yellowRiskIconUrl)
+      .then(() => { addHighlightLayer() })
+      .catch(() => { addHighlightLayer() })
   }
 
   // lines (窄巷) highlight source/layer
@@ -1524,7 +1569,7 @@ function ensureNearbyCircleLayer() {
       source: 'nearby-center',
       paint: {
         'circle-radius': 8,
-        'circle-color': '#2563eb',
+        'circle-color': '#5AB4C5',
         'circle-stroke-width': 2,
         'circle-stroke-color': '#ffffff'
       }
@@ -1547,11 +1592,16 @@ function updateCircleAndHighlights(centerLon, centerLat) {
   const lineFeatures = []
   for (const [dsid, cache] of datasetCache.entries()) {
     if (!cache || !cache.geo) continue
-    // only include construction (points) and narrow_street (lines) — but support both types
+    const ds = datasets.value.find((d) => d.id === dsid)
+    if (!ds) continue
+    if (!ds.visible) continue
+    const allowPointHighlight = ds.includeNearby !== false
+  // highlighter respects dataset visibility; points honor includeNearby flag
     for (const f of cache.geo.features || []) {
       if (!f || !f.geometry) continue
       const g = f.geometry
       if (g.type === 'Point') {
+        if (!allowPointHighlight) continue
         const [flon, flat] = g.coordinates
         if (distM(centerLon, centerLat, flon, flat) <= NEARBY_RADIUS_M) {
           pointFeatures.push({ type: 'Feature', geometry: g, properties: { ...f.properties, _dsid: dsid } })
@@ -2017,27 +2067,107 @@ async function performRoadSearch() {
 }
 
 // ===== 地名搜尋（限定台北市邊界）=====
-function searchInAttractionDataset(kw) {
+let attractionSearchFeatures = null
+
+function normalizeForMatch(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, '')
+    .replace(/台/g, '臺')
+    .toLowerCase()
+}
+
+function buildPlaceResultFromFeature(feature) {
+  if (!feature || feature.geometry?.type !== 'Point') return null
+  const coords = Array.isArray(feature.geometry?.coordinates) ? feature.geometry.coordinates : null
+  if (!coords || coords.length < 2) return null
+
+  const [lonRaw, latRaw] = coords
+  const lon = typeof lonRaw === 'number' ? lonRaw : Number(lonRaw)
+  const lat = typeof latRaw === 'number' ? latRaw : Number(latRaw)
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null
+
+  const props = feature.properties || {}
+  const preferredName = props['地點名稱'] || props['位置'] || props['name'] || props['名稱'] || props['NAME'] || ''
+  const address = props['地址'] || props['address'] || ''
+  const placeLabel = preferredName || address || ''
+
+  return {
+    lon,
+    lat,
+    place: placeLabel,
+    addr: address || placeLabel,
+    props
+  }
+}
+
+async function getAttractionFeaturesForSearch() {
   const cache = datasetCache.get('attraction')
-  if (!cache) return null
-  const feats = cache.geo?.features || []
-  const k = kw.trim()
-  const f = feats.find(f => {
-    const name = String(f?.properties?.['位置'] || '')
-    const addr = String(f?.properties?.['地址'] || '')
-    return name.includes(k) || addr.includes(k)
-  })
-  if (f?.geometry?.type === 'Point') {
-    const [lon, lat] = f.geometry.coordinates
-    return {
-      lon,
-      lat,
-      place: f?.properties?.['位置'] || '',
-      addr: f?.properties?.['地址'] || '',
-      props: f?.properties || {}
+  if (cache?.geo?.features) return cache.geo.features
+  if (Array.isArray(attractionSearchFeatures)) return attractionSearchFeatures
+
+  const ds = datasets.value.find((item) => item.id === 'attraction')
+  if (!ds) return []
+
+  try {
+    const geo = await fetch(ds.url).then((r) => r.json())
+    const features = Array.isArray(geo?.features) ? geo.features : []
+    attractionSearchFeatures = features
+    return features
+  } catch (err) {
+    console.warn('Failed to load attraction dataset for search', err)
+    attractionSearchFeatures = []
+    return []
+  }
+}
+
+async function searchInAttractionDataset(kw) {
+  const keyword = (kw || '').trim()
+  if (!keyword) return null
+
+  const features = await getAttractionFeaturesForSearch()
+  if (!features.length) return null
+
+  const normalizedKw = normalizeForMatch(keyword)
+  let partialMatch = null
+
+  for (const feature of features) {
+    const baseResult = buildPlaceResultFromFeature(feature)
+    if (!baseResult) continue
+    const props = baseResult.props || {}
+    const candidateSet = new Set([
+      props['地點名稱'],
+      props['位置'],
+      props['name'],
+      props['名稱'],
+      props['NAME'],
+      props['地址'],
+      props['address'],
+      baseResult.place,
+      baseResult.addr
+    ])
+    candidateSet.delete('')
+
+    for (const rawName of candidateSet) {
+      if (!rawName) continue
+      const normalizedName = normalizeForMatch(rawName)
+      if (!normalizedName) continue
+
+      const candidate = { ...baseResult }
+      if (!candidate.place) candidate.place = rawName
+      if (!candidate.addr) candidate.addr = rawName
+
+      if (normalizedName === normalizedKw) {
+        return candidate
+      }
+
+      if (!partialMatch && (normalizedName.includes(normalizedKw) || normalizedKw.includes(normalizedName))) {
+        partialMatch = candidate
+      }
     }
   }
-  return null
+
+  return partialMatch
 }
 
 function flyToLngLat(lon, lat, zoom = 15, padding = {}) {
@@ -2096,6 +2226,23 @@ async function geocodePlaceInTaipei(q) {
   } catch (_) { return null }
 }
 
+async function resolvePlaceCoordinates(kw) {
+  const keyword = (kw || '').trim()
+  if (!keyword) return null
+
+  const datasetHit = await searchInAttractionDataset(keyword)
+  if (datasetHit) {
+    return { ...datasetHit, source: 'dataset' }
+  }
+
+  const geocodeHit = await geocodePlaceInTaipei(keyword)
+  if (geocodeHit) {
+    return { ...geocodeHit, source: 'geocode' }
+  }
+
+  return null
+}
+
 // ===== 搜尋與清除 =====
 async function goSearch() {
   if (searchMode.value === 'road') {
@@ -2113,25 +2260,7 @@ async function goSearch() {
   const kw = (searchText.value || '').trim()
   if (!kw) return
 
-  // 1) 先查 attraction 的 位置/地址
-  const dsHit = searchInAttractionDataset(kw)
-  if (dsHit) {
-    lastSearchLonLat.value = { lon: dsHit.lon, lat: dsHit.lat }
-    originMode.value = 'search'
-    ensureSearchMarkerLayer()
-    const { lon, lat } = lastSearchLonLat.value
-    map.getSource('search-target')?.setData({
-      type: 'FeatureCollection',
-      features: [{ type: 'Feature', geometry: { type: 'Point', coordinates: [lon, lat] } }]
-    })
-    flyToLngLat(lon, lat, 16)
-    computeNearby(lon, lat)
-    pickSelectedPlace({ lon: dsHit.lon, lat: dsHit.lat, place: dsHit.place, addr: dsHit.addr })
-    return
-  }
-
-  // 2) 找不到才用限定台北市的 geocoding
-  const hit = await geocodePlaceInTaipei(kw)
+  const hit = await resolvePlaceCoordinates(kw)
   if (hit) {
     lastSearchLonLat.value = { lon: hit.lon, lat: hit.lat }
     originMode.value = 'search'
@@ -2293,7 +2422,7 @@ onBeforeUnmount(() => {
           <div class="flex flex-1 items-center gap-2">
             <select
               v-model="searchMode"
-              class="h-11 w-28 rounded-full border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
+              class="tp-focus-outline h-11 w-28 rounded-full border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 shadow-sm"
             >
               <option value="place">地點</option>
               <option value="road">道路</option>
@@ -2308,7 +2437,7 @@ onBeforeUnmount(() => {
                     @keyup.enter="goSearch"
                     type="text"
                     placeholder="輸入地點或地址"
-                    class="w-full rounded-full border border-gray-300 bg-white pl-4 pr-12 py-2.5 text-sm shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
+                    class="tp-focus-outline w-full rounded-full border border-gray-300 bg-white pl-4 pr-12 py-2.5 text-sm shadow-sm"
                   />
                   <button
                     v-if="searchText"
@@ -2325,11 +2454,8 @@ onBeforeUnmount(() => {
                 <button
                   @click="goSearch"
                   type="button"
-                  class="flex h-10 w-10 items-center justify-center rounded-full border shadow-sm transition-colors"
+                  class="tp-search-btn flex h-10 w-10 items-center justify-center rounded-full border shadow-sm transition-colors"
                   :disabled="isGlobalSearchButtonDisabled"
-                  :class="isGlobalSearchButtonDisabled
-                    ? 'border-sky-200 bg-sky-100 text-sky-500 cursor-not-allowed'
-                    : 'border-sky-500 bg-sky-500 text-white hover:bg-sky-600'"
                   title="搜尋"
                 >
                   <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2347,7 +2473,7 @@ onBeforeUnmount(() => {
                     @blur="closeRoadSuggestionDropdown"
                     type="text"
                     placeholder="輸入道路名稱"
-                    class="w-full rounded-full border border-gray-300 bg-white pl-4 pr-12 py-2.5 text-sm shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
+                    class="tp-focus-outline w-full rounded-full border border-gray-300 bg-white pl-4 pr-12 py-2.5 text-sm shadow-sm"
                   />
                   <button
                     v-if="roadSearchText"
@@ -2371,7 +2497,7 @@ onBeforeUnmount(() => {
                         v-for="name in roadSuggestions"
                         :key="name"
                         type="button"
-                        class="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-sky-50"
+                        class="tp-suggestion w-full px-4 py-2 text-left text-sm text-gray-700 transition-colors"
                         @mousedown.prevent="selectRoadSuggestion(name)"
                       >
                         {{ name }}
@@ -2383,11 +2509,8 @@ onBeforeUnmount(() => {
                 <button
                   @click="goSearch"
                   type="button"
-                  class="flex h-10 w-10 items-center justify-center rounded-full border shadow-sm transition-colors"
+                  class="tp-search-btn flex h-10 w-10 items-center justify-center rounded-full border shadow-sm transition-colors"
                   :disabled="isGlobalSearchButtonDisabled"
-                  :class="isGlobalSearchButtonDisabled
-                    ? 'border-sky-200 bg-sky-100 text-sky-500 cursor-not-allowed'
-                    : 'border-sky-500 bg-sky-500 text-white hover:bg-sky-600'"
                   title="搜尋"
                 >
                   <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2404,7 +2527,7 @@ onBeforeUnmount(() => {
                     @keyup.enter="goSearch"
                     type="text"
                     placeholder="起點地址"
-                    class="w-full rounded-full border border-gray-300 bg-white pl-4 pr-12 py-2.5 text-sm shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
+                    class="tp-focus-outline w-full rounded-full border border-gray-300 bg-white pl-4 pr-12 py-2.5 text-sm shadow-sm"
                   />
                   <button
                     v-if="routeStart"
@@ -2422,10 +2545,7 @@ onBeforeUnmount(() => {
                   @click="swapRouteEndpoints"
                   type="button"
                   :disabled="!routeStart && !routeEnd"
-                  class="flex h-10 w-10 items-center justify-center rounded-full border shadow-sm transition-colors"
-                  :class="(!routeStart && !routeEnd)
-                    ? 'border-gray-200 bg-white text-gray-300 cursor-not-allowed'
-                    : 'border-sky-200 bg-white text-sky-600 hover:bg-sky-50'"
+                  class="tp-swap-btn flex h-10 w-10 items-center justify-center rounded-full border bg-white shadow-sm transition-colors"
                   title="交換起訖點"
                 >
                   <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" stroke="none">
@@ -2439,7 +2559,7 @@ onBeforeUnmount(() => {
                     @keyup.enter="goSearch"
                     type="text"
                     placeholder="終點地址"
-                    class="w-full rounded-full border border-gray-300 bg-white pl-4 pr-12 py-2.5 text-sm shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
+                    class="tp-focus-outline w-full rounded-full border border-gray-300 bg-white pl-4 pr-12 py-2.5 text-sm shadow-sm"
                   />
                   <button
                     v-if="routeEnd"
@@ -2456,12 +2576,9 @@ onBeforeUnmount(() => {
                 <button
                   @click="goSearch"
                   type="button"
-                  :disabled="!routeStart || !routeEnd"
-                  class="flex h-10 w-10 items-center justify-center rounded-full border shadow-sm transition-colors"
-                  :class="(!routeStart || !routeEnd)
-                    ? 'border-sky-200 bg-sky-100 text-sky-500 cursor-not-allowed'
-                    : 'border-sky-500 bg-sky-500 text-white hover:bg-sky-600'"
+                  class="tp-search-btn flex h-10 w-10 items-center justify-center rounded-full border shadow-sm transition-colors"
                   title="規劃路線"
+                  :disabled="!routeStart || !routeEnd"
                 >
                   <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
@@ -2483,7 +2600,8 @@ onBeforeUnmount(() => {
               <button
                 @click="centerOnUserLocation"
                 type="button"
-                class="flex h-11 w-11 items-center justify-center rounded-full border border-gray-300 bg-white text-sky-500 shadow-md hover:bg-sky-50 transition-colors"
+                class="tp-icon-btn flex h-11 w-11 items-center justify-center rounded-full shadow-md transition-colors"
+                :class="{ 'tp-icon-btn--active': originMode === 'gps' && userLonLat }"
                 title="回到我的位置"
               >
                 <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -2525,10 +2643,8 @@ onBeforeUnmount(() => {
                   @click="showSettingsPanel = !showSettingsPanel"
                   type="button"
                   :class="[
-                    'flex h-11 w-11 items-center justify-center rounded-full border shadow-md transition-colors',
-                    showSettingsPanel 
-                      ? 'border-sky-400 bg-sky-50 text-sky-600' 
-                      : 'border-gray-300 bg-white text-gray-500 hover:bg-gray-50'
+                    'tp-icon-btn flex h-11 w-11 items-center justify-center rounded-full shadow-md transition-colors',
+                    showSettingsPanel ? 'tp-icon-btn--active' : ''
                   ]"
                   title="設定"
                 >
@@ -2550,7 +2666,7 @@ onBeforeUnmount(() => {
                         <button
                           @click="selectAllDatasets"
                           type="button"
-                          class="text-xs text-sky-600 hover:text-sky-800"
+                          class="tp-link text-xs"
                         >
                           全選
                         </button>
@@ -2558,7 +2674,7 @@ onBeforeUnmount(() => {
                         <button
                           @click="deselectAllDatasets"
                           type="button"
-                          class="text-xs text-sky-600 hover:text-sky-800"
+                          class="tp-link text-xs"
                         >
                           全不選
                         </button>
@@ -2574,7 +2690,7 @@ onBeforeUnmount(() => {
                           type="checkbox"
                           :checked="enabledDatasets.includes(ds.id)"
                           @change="toggleDatasetCheckbox(ds.id)"
-                          class="h-4 w-4 rounded border-gray-300 text-sky-600 focus:ring-sky-500"
+                          class="tp-checkbox h-4 w-4 rounded border border-gray-300"
                         />
                         <span class="text-sm text-gray-700">{{ ds.name }}</span>
                       </label>
