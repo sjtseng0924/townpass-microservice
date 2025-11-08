@@ -279,12 +279,18 @@ def scrape_construction_notices(session: Session, max_pages: int = None) -> List
             for tr in rows:
                 tds = tr.select("td")
                 if len(tds) >= 4:
-                    row_count += 1
                     # 解析欄位
                     date_range_str = tds[0].text.strip()  # 日期範圍字串
                     notice_type = tds[1].text.strip()  # 類型
                     unit = tds[2].text.strip()  # 單位
                     name = tds[3].text.strip()  # 名稱/道路
+                    
+                    # 數據驗證：跳過明顯異常的數據（名稱太短、只包含數字、或為空）
+                    if not name or len(name) < 3 or (name.isdigit() and len(name) <= 2):
+                        logger.debug(f"跳過異常數據: name='{name}', type='{notice_type}', unit='{unit}'")
+                        continue
+                    
+                    row_count += 1
                     
                     # 解析日期範圍
                     start_date, end_date = parse_roc_date_range(date_range_str)
@@ -457,6 +463,9 @@ def save_construction_notices(session: Session, notices: List[Dict[str, Any]], c
             geometry = geometry_map.get(idx)
             
             if not existing:
+                # 確保 geometry 為 None 時不會被保存為字符串 'null'
+                geometry_value = geometry if geometry else None
+                
                 notice = ConstructionNotice(
                     start_date=notice_data.get('start_date'),
                     end_date=notice_data.get('end_date'),
@@ -465,14 +474,14 @@ def save_construction_notices(session: Session, notices: List[Dict[str, Any]], c
                     unit=notice_data.get('unit'),
                     road=notice_data.get('road'),
                     url=notice_data.get('url'),
-                    geometry=geometry
+                    geometry=geometry_value
                 )
                 session.add(notice)
                 saved_count += 1
             else:
                 # 如果已存在但沒有座標，嘗試更新座標
                 if not existing.geometry and geometry:
-                    existing.geometry = geometry
+                    existing.geometry = geometry if geometry else None
                     session.add(existing)
                     updated_count += 1
         
