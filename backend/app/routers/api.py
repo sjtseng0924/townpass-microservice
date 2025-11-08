@@ -47,11 +47,34 @@ def create_test_record(payload: schemas.TestCreate, db: Session = Depends(get_db
 
 @router.get("/construction/geojson", response_model=Dict[str, Any])
 def get_construction_data(response: Response):
-    """Get construction data as GeoJSON from file"""
+    """Get construction data as GeoJSON from file. If file doesn't exist, update it first."""
     geojson = get_construction_geojson(settings.CONSTRUCTION_GEOJSON_PATH)
+    
+    # If file doesn't exist, try to update it first
     if geojson is None:
-        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        return {"error": "Construction data not available"}
+        logger.info("Construction GeoJSON file not found, attempting to update...")
+        try:
+            # Ensure data directory exists
+            data_dir = os.path.dirname(settings.CONSTRUCTION_GEOJSON_PATH)
+            os.makedirs(data_dir, exist_ok=True)
+            
+            # Try to update the file
+            success = update_construction_geojson_file(settings.CONSTRUCTION_GEOJSON_PATH)
+            if success:
+                # Read the newly created file
+                geojson = get_construction_geojson(settings.CONSTRUCTION_GEOJSON_PATH)
+                if geojson is not None:
+                    logger.info("Successfully updated and loaded construction data")
+                    return geojson
+            
+            # If update failed or file still doesn't exist
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            return {"error": "Construction data not available and update failed"}
+        except Exception as e:
+            logger.error(f"Error updating construction data: {e}", exc_info=True)
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            return {"error": f"Failed to update construction data: {str(e)}"}
+    
     return geojson
 
 
