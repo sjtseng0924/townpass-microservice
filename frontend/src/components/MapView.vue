@@ -1168,7 +1168,7 @@ async function performRouteSearch() {
       lastSearchLonLat.value = { lon: center.lng, lat: center.lat }
     }
 
-    refreshRouteMatches(true)
+  refreshRouteMatches()
 
   } catch (error) {
     console.error('路線規劃錯誤:', error)
@@ -1952,7 +1952,6 @@ function refreshRouteMatches(autoOpen = false) {
 }
 
 function openRoadMatchList() {
-  if (!roadMatchList.value.length) return
   showRoadMatches.value = true
   showRoadMatchDetail.value = false
   selectedRoadMatch.value = null
@@ -2056,7 +2055,7 @@ async function performRoadSearch() {
       try { await ensureDatasetLoaded(constructionDs) } catch (_) {}
     }
   lastRoadFeatureCollection.value = collection
-    refreshRoadMatches(true)
+  refreshRoadMatches()
     if (fittedBounds && !fittedBounds.isEmpty()) {
       const center = fittedBounds.getCenter()
       lastSearchLonLat.value = { lon: center.lng, lat: center.lat }
@@ -2732,7 +2731,7 @@ onBeforeUnmount(() => {
                     class="flex w-full items-center justify-between rounded-t-2xl px-4 py-3 text-left font-medium"
                     @click="closeRouteMatchList"
                   >
-                    <span>路線沿線施工據點（{{ routeMatchList.length }}）</span>
+                    <span>道路沿線施工據點（{{ routeMatchList.length }}）</span>
                     <span class="text-sm text-gray-500">收合</span>
                   </button>
                   <div class="max-h-48 overflow-y-auto px-4 pb-4">
@@ -2771,8 +2770,7 @@ onBeforeUnmount(() => {
                 </button>
               </div>
               <div v-else class="pointer-events-auto flex w-fit mx-auto flex-col items-center gap-1 rounded-full bg-white/95 px-4 py-2 text-sm font-medium shadow text-center">
-                <span class="whitespace-nowrap">路線沿線施工據點（0）</span>
-                <span class="text-xs font-normal text-gray-600">{{ ROUTE_CONSTRUCTION_DISTANCE_THRESHOLD }} 公尺內沒有符合條件的據點</span>
+                <span class="whitespace-nowrap">查看路線施工據點（0）</span>
               </div>
             </template>
             <template v-else-if="routeMatchNotice">
@@ -2845,8 +2843,7 @@ onBeforeUnmount(() => {
                 </button>
               </div>
               <div v-else class="pointer-events-auto flex w-fit mx-auto flex-col items-center gap-1 rounded-full bg-white/95 px-4 py-2 text-sm font-medium shadow text-center">
-                <span class="whitespace-nowrap">道路沿線施工據點（0）</span>
-                <span class="text-xs font-normal text-gray-600">{{ ROAD_CONSTRUCTION_DISTANCE_THRESHOLD }} 公尺內沒有符合條件的據點</span>
+                <span class="whitespace-nowrap">查看道路施工據點（0）</span>
               </div>
             </template>
             <template v-else-if="roadMatchNotice">
