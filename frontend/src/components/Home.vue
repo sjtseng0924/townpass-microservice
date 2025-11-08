@@ -439,49 +439,11 @@ async function toggleNotification(placeId) {
       notification_enabled: nowEnabled
     })
     saveNotificationSettings()
-
-    // 如果剛開啟，立即檢查一次（前端即時通知）
-    if (nowEnabled) {
-      checkAndNotifyPlace(placeId, { immediate: true })
-    }
   } catch (error) {
     console.error('Failed to update notification setting:', error)
     // 回滾
     notificationEnabled.value[placeId] = wasEnabled
     alert('更新通知設置失敗，請稍後再試')
-  }
-}
-
-function checkAndNotifyPlace(placeId, { immediate = false } = {}) {
-  const place = savedPlaces.value.find(p => p.id === placeId)
-  if (!place) return
-  const recs = Array.isArray(place.recommendations) ? place.recommendations : []
-  const constructionCount = recs.filter(r => r?.dsid === 'construction' || (r?.props && (r.props.DIGADD || r.props.PURP))).length
-  if (constructionCount <= 0) return
-
-  // 立即通知（前端層，不需時間間隔判斷）
-  try {
-    const isRoad = place.type === 'road'
-    const isRoute = place.type === 'route'
-    const radiusText = isRoad
-      ? `${place.roadDistanceThreshold || ROAD_NOTICE_DISTANCE_M} 公尺內`
-      : isRoute
-        ? `${place.routeDistanceThreshold || ROUTE_NOTICE_DISTANCE_M} 公尺內`
-        : '1 公里內'
-    const subject = place.name || (isRoad ? '收藏道路' : isRoute ? '收藏路線' : '收藏地點')
-    const actor = isRoad ? '此道路' : isRoute ? '此路線' : '此收藏'
-    const payload = {
-      name: 'notify',
-      data: {
-        title: `${subject} 附近施工資訊`,
-        content: `${actor} ${radiusText}有 ${constructionCount} 個施工地點`,
-      },
-    }
-    if (typeof window !== 'undefined' && window.flutterObject?.postMessage) {
-      window.flutterObject.postMessage(JSON.stringify(payload))
-    }
-  } catch (e) {
-    console.warn('Failed to send notify message', e)
   }
 }
 
