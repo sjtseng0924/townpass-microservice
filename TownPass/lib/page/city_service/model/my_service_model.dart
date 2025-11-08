@@ -41,7 +41,7 @@ extension MyServiceIdExt on MyServiceItemId {
           description: '更多市政服務，持續開發中',
           icon: Assets.svg.icon1999phoneS.svg(),
           category: MyServiceCategory.cityService,
-          destinationUrl: 'https://townpass-microservice.web.app/',
+          destinationUrl: 'https://townpass-microservice--god-shield-zbq1etlw.web.app',
         ),
       MyServiceItemId.dedicatedLine => MyServiceItem(
           title: '1999',

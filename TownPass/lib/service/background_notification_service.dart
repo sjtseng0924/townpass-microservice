@@ -4,13 +4,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
 import 'package:http/http.dart' as http;
 import 'package:town_pass/util/geo_distance.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'notification_service.dart';
 
 /// 背景通知服務（使用 Android AlarmManager 實現週期檢查）
 /// 可在 App 關閉時持續運作
 class BackgroundNotificationService {
   static const int _alarmId = 0;
-  static const String _baseUrl = 'https://townpass.chencx.cc';
+  static final String _baseUrl =
+      dotenv.env['API_BASE'] ?? 'https://townpass.chencx.cc';
 
   /// 初始化服務
   static Future<void> initialize() async {

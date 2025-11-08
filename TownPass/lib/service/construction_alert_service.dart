@@ -8,9 +8,11 @@ import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 import 'package:town_pass/service/notification_service.dart';
 import 'package:town_pass/util/geo_distance.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 class ConstructionAlertService extends GetxService {
-  static const String _baseUrl = 'https://townpass.chencx.cc';
+  static final String _baseUrl =
+      dotenv.env['API_BASE'] ?? 'https://townpass.chencx.cc';
   static const Duration _refreshInterval = Duration(minutes: 10);
   static const Duration _dedupeWindow = Duration(minutes: 5);
   static const Duration _voiceCooldown = Duration(minutes: 2);
@@ -45,14 +47,19 @@ class ConstructionAlertService extends GetxService {
     }
 
     await _loadConstructionData();
+    print('[ConstructionAlertService] Feature cache length: ${_features.length}');
     _refreshTimer?.cancel();
-    _refreshTimer = Timer.periodic(_refreshInterval, (_) => _loadConstructionData());
+    _refreshTimer = Timer.periodic(_refreshInterval, (_) async {
+      await _loadConstructionData();
+      print('[ConstructionAlertService] Feature cache refreshed: ${_features.length}');
+    });
 
     final locationSettings = _buildLocationSettings();
 
     _positionSubscription = Geolocator.getPositionStream(locationSettings: locationSettings).listen(
       _handlePositionUpdate,
       onError: (error) => print('[ConstructionAlertService] Position stream error: $error'),
+      onDone: () => print('[ConstructionAlertService] Position stream closed'),
     );
 
     print('[ConstructionAlertService] Real-time monitoring started');
@@ -122,8 +129,12 @@ class ConstructionAlertService extends GetxService {
 
   void _handlePositionUpdate(Position position) {
     if (_features.isEmpty) {
+      print('[ConstructionAlertService] Position ignored: feature cache empty');
       return;
     }
+
+    print('[ConstructionAlertService] Position update '
+        '(${position.latitude}, ${position.longitude}) accuracy=${position.accuracy}');
 
     final hits = <_ConstructionHit>[];
     for (final feature in _features) {
@@ -144,30 +155,41 @@ class ConstructionAlertService extends GetxService {
         lon,
       );
 
-      if (distanceKm > _alertRadiusKm) continue;
-
+      final distanceMeters = distanceKm * 1000;
       final props = feature['properties'] as Map<String, dynamic>? ?? {};
-      final id = _featureId(props, lat, lon);
-      if (!_shouldNotify(id)) continue;
-
       final name = props['AP_NAME'] ??
           props['場地名稱'] ??
           props['ROAD'] ??
           props['ROAD_NAME'] ??
           '施工地點';
 
+      // print('[ConstructionAlertService] → $name '
+      //     '${distanceMeters.toStringAsFixed(1)}m');
+
+      if (distanceKm > _alertRadiusKm) continue;
+
+      final id = _featureId(props, lat, lon);
+      if (!_shouldNotify(id)) {
+        print('[ConstructionAlertService] Skip $name (dedupe window)');
+        continue;
+      }
+
       hits.add(
         _ConstructionHit(
           id: id,
           name: name.toString(),
-          distanceMeters: distanceKm * 1000,
+          distanceMeters: distanceMeters,
         ),
       );
     }
 
-    if (hits.isEmpty) return;
+    if (hits.isEmpty) {
+      print('[ConstructionAlertService] No hits within ${_alertRadiusKm * 1000}m');
+      return;
+    }
 
     hits.sort((a, b) => a.distanceMeters.compareTo(b.distanceMeters));
+    print('[ConstructionAlertService] Hits in range: ${hits.length}');
     _sendAlerts(hits);
   }
 
@@ -193,15 +215,24 @@ class ConstructionAlertService extends GetxService {
         ? '${hits.first.name} 約 ${(hits.first.distanceMeters).toStringAsFixed(0)} 公尺'
         : '$topNames 等 ${hits.length} 處';
 
+    print('[ConstructionAlertService] Notify: $content');
+
     await NotificationService.showNotification(
       title: '前方施工提醒',
       content: '$content，請注意行車安全',
     );
 
-    if (_lastSpokenAt == null || now.difference(_lastSpokenAt!) > _voiceCooldown) {
+    final cooldownRemaining =
+        _lastSpokenAt == null ? Duration.zero : now.difference(_lastSpokenAt!);
+    if (_lastSpokenAt == null || cooldownRemaining > _voiceCooldown) {
+      print('[ConstructionAlertService] TTS speak start');
       await _tts.stop();
       await _tts.speak('前方$topNames有施工，請放慢速度注意安全');
       _lastSpokenAt = now;
+      print('[ConstructionAlertService] TTS speak done');
+    } else {
+      final remain = _voiceCooldown - cooldownRemaining;
+      print('[ConstructionAlertService] Skip TTS, cooldown ${remain.inSeconds}s left');
     }
   }
 
