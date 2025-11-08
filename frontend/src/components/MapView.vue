@@ -14,8 +14,6 @@ const router = useRouter()
 // ====== Flutter / GPS 互動 ======
 let pollTimer = null
 let flutterMsgHandler = null
-let latestRoadSuggestionToken = 0
-let skipNextRoadSuggestionFetch = false
 
 // ====== UI 狀態 ======
 const searchMode = ref('place')      // 'place' | 'road' | 'route'
@@ -24,6 +22,7 @@ const roadSearchText = ref('')
 const routeStart = ref('')           // 起點輸入
 const routeEnd = ref('')             // 終點輸入
 const currentRouteGeoJSON = ref(null) // 當前路線的 GeoJSON 資料
+const currentRouteMeta = ref(null)    // 路線收藏與資訊所需的中繼資料
 // 行政區篩選已移除，改用資料集顯示切換
 const selectedDistrict = ref('')   // 保留但不再顯示 UI（若未來需要可再啟用）
 const enabledDatasets = ref(['construction', 'narrow_street']) // 已啟用的資料集 ID 陣列（景點僅供搜尋用）
@@ -35,17 +34,6 @@ const lastSearchLonLat = ref(null)  // { lon, lat }：最近一次「搜尋中�
 const userLonLat = ref(null)        // { lon, lat }：最新「GPS 定位」
 const originMode = ref('gps')       // 'gps' | 'search'
 const showSettingsPanel = ref(false) // 設定齒輪彈窗開關
-const roadSuggestions = ref([])
-const showRoadSuggestions = ref(false)
-const isFetchingRoadSuggestions = ref(false)
-const isSearchingRoad = ref(false)
-const roadMatchList = ref([])
-const showRoadMatches = ref(false)
-const showRoadMatchDetail = ref(false)
-const selectedRoadMatch = ref(null)
-const roadMatchNotice = ref('')
-let lastRoadFeatureCollection = null
-const ROAD_CONSTRUCTION_DISTANCE_THRESHOLD = 15
 
 // （行政區清單已不再顯示）
 const TPE_DISTRICTS = []
@@ -77,6 +65,8 @@ const FAVORITES_STORAGE_KEY = 'mapFavorites'
 const favorites = ref([])
 const selectedPlace = ref(null)
 const NEARBY_RADIUS_M = 1000
+const lastRoadFeatureCollection = ref(null)
+const lastRouteFeatureCollection = ref(null)
 
 function handleTabSelect(tab) {
   if (tab === 'recommend') {
@@ -304,21 +294,6 @@ function setRoadSearchData(featureCollection, presetBounds = null) {
   return bounds
 }
 
-function clearRoadSearchData() {
-  lastRoadFeatureCollection = null
-  roadMatchList.value = []
-  showRoadMatches.value = false
-  showRoadMatchDetail.value = false
-  selectedRoadMatch.value = null
-  roadMatchNotice.value = ''
-  if (!map) return
-  const src = map.getSource(ROAD_SEARCH_SOURCE_ID)
-  if (src) {
-    src.setData({ type: 'FeatureCollection', features: [] })
-  }
-  updateRoadConstructionHighlights([], null)
-}
-
 watch(showNearby, async () => {
   await nextTick()
   map?.resize()
@@ -343,63 +318,116 @@ watch(searchMode, (mode) => {
   }
 })
 
-watch(roadSearchText, async (value) => {
-  if (searchMode.value !== 'road') return
-  if (skipNextRoadSuggestionFetch) {
-    skipNextRoadSuggestionFetch = false
-    return
+function normalizeFavorite(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const type = raw.type === 'road' ? 'road' : raw.type === 'route' ? 'route' : 'place'
+  const normalized = {
+    ...raw,
+    type,
+    recommendations: Array.isArray(raw?.recommendations) ? raw.recommendations : [],
   }
-  const keyword = value.trim()
-  if (!keyword) {
-    roadSuggestions.value = []
-    showRoadSuggestions.value = false
-    return
+  if (type === 'road') {
+    normalized.roadDistanceThreshold = typeof raw.roadDistanceThreshold === 'number'
+      ? raw.roadDistanceThreshold
+      : ROAD_CONSTRUCTION_DISTANCE_THRESHOLD
+    if (!normalized.address) {
+      const roadName = raw.roadName || raw.name || '道路'
+      normalized.address = `${roadName} 道路`
+    }
+  } else if (type === 'route') {
+    normalized.routeDistanceThreshold = typeof raw.routeDistanceThreshold === 'number'
+      ? raw.routeDistanceThreshold
+      : ROUTE_CONSTRUCTION_DISTANCE_THRESHOLD
+    normalized.routeStart = raw.routeStart || raw.startLabel || raw.startInput || ''
+    normalized.routeEnd = raw.routeEnd || raw.endLabel || raw.endInput || ''
+    if (!normalized.name) {
+      const startName = normalized.routeStart || '起點'
+      const endName = normalized.routeEnd || '終點'
+      normalized.name = `${startName} → ${endName}`
+    }
+    if (!normalized.address) {
+      normalized.address = normalized.name
+    }
+  }
+  return normalized
+}
+
+const currentFavoriteContext = computed(() => {
+  const routeMeta = currentRouteMeta.value
+  if (routeMeta?.featureCollection?.features?.length) {
+    const startName = routeMeta.startLabel || routeMeta.startInput || '起點'
+    const endName = routeMeta.endLabel || routeMeta.endInput || '終點'
+    let center = lastSearchLonLat.value
+    if (!center && routeMeta.featureCollection.features[0]?.geometry?.coordinates?.length) {
+      const coords = routeMeta.featureCollection.features[0].geometry.coordinates
+      if (Array.isArray(coords) && coords.length) {
+        const midIndex = Math.floor(coords.length / 2)
+        const mid = coords[midIndex]
+        if (Array.isArray(mid) && mid.length >= 2) {
+          center = { lon: mid[0], lat: mid[1] }
+        }
+      }
+    }
+    return {
+      type: 'route',
+      id: routeMeta.id,
+      name: `${startName} → ${endName}`,
+      startInput: routeMeta.startInput,
+      endInput: routeMeta.endInput,
+      startLabel: startName,
+      endLabel: endName,
+      startCoords: routeMeta.startCoords,
+      endCoords: routeMeta.endCoords,
+      distance: routeMeta.distance,
+      duration: routeMeta.duration,
+      featureCollection: routeMeta.featureCollection,
+      center,
+    }
   }
 
-  const token = ++latestRoadSuggestionToken
-  isFetchingRoadSuggestions.value = true
-  try {
-    const items = await suggestRoadSegments(keyword)
-    if (token === latestRoadSuggestionToken) {
-      roadSuggestions.value = items
-      showRoadSuggestions.value = items.length > 0
+  const roadCollection = lastRoadFeatureCollection.value
+  if (roadCollection && Array.isArray(roadCollection.features) && roadCollection.features.length > 0) {
+    const keyword = (roadSearchText.value || '').trim()
+    const features = roadCollection.features
+    const osmids = [...new Set(features.map((f) => f?.properties?.osmid).filter(Boolean))].sort()
+    const nameCandidates = features
+      .map((f) => f?.properties?.name)
+      .filter((v) => typeof v === 'string' && v.trim().length > 0)
+    const roadName = nameCandidates[0] || keyword || '未命名道路'
+    let center = lastSearchLonLat.value
+    if (!center) {
+      const bounds = computeBounds(roadCollection)
+      if (bounds && typeof bounds.getCenter === 'function' && !bounds.isEmpty?.()) {
+        const c = bounds.getCenter()
+        center = { lon: c.lng, lat: c.lat }
+      }
     }
-  } catch (err) {
-    if (token === latestRoadSuggestionToken) {
-      console.warn('Failed to fetch road suggestions', err)
-      roadSuggestions.value = []
-      showRoadSuggestions.value = false
-    }
-  } finally {
-    if (token === latestRoadSuggestionToken) {
-      isFetchingRoadSuggestions.value = false
+    return {
+      type: 'road',
+      id: osmids.length ? `road:${osmids.join(',')}` : `road:${roadName}`,
+      name: roadName,
+      keyword,
+      osmids,
+      center,
     }
   }
+
+  if (selectedPlace.value?.id) {
+    return {
+      type: 'place',
+      id: selectedPlace.value.id,
+      place: selectedPlace.value,
+    }
+  }
+
+  return null
 })
 
-const selectedPlaceSaved = computed(() => {
-  if (!selectedPlace.value?.id) return false
-  return favorites.value.some((f) => f.id === selectedPlace.value.id)
+const currentFavoriteSaved = computed(() => {
+  const ctx = currentFavoriteContext.value
+  if (!ctx?.id) return false
+  return favorites.value.some((fav) => fav.id === ctx.id)
 })
-
-function selectRoadSuggestion(name) {
-  skipNextRoadSuggestionFetch = true
-  roadSearchText.value = name
-  showRoadSuggestions.value = false
-}
-
-function openRoadSuggestionDropdown() {
-  if (searchMode.value !== 'road') return
-  if (roadSuggestions.value.length > 0) {
-    showRoadSuggestions.value = true
-  }
-}
-
-function closeRoadSuggestionDropdown() {
-  setTimeout(() => {
-    showRoadSuggestions.value = false
-  }, 150)
-}
 
 function readFavoritesFromStorage() {
   if (typeof window === 'undefined') return []
@@ -414,10 +442,9 @@ function readFavoritesFromStorage() {
 }
 
 function refreshFavorites() {
-  const list = readFavoritesFromStorage().map((item) => ({
-    ...item,
-    recommendations: Array.isArray(item?.recommendations) ? item.recommendations : [],
-  }))
+  const list = readFavoritesFromStorage()
+    .map((item) => normalizeFavorite(item))
+    .filter(Boolean)
   list.sort((a, b) => {
     const da = a?.addedAt ? Date.parse(a.addedAt) : 0
     const db = b?.addedAt ? Date.parse(b.addedAt) : 0
@@ -438,33 +465,35 @@ function removeFavoriteById(id) {
   saveFavorites(next)
 }
 
-async function toggleSelectedPlaceFavorite() {
-  if (!selectedPlace.value) {
-    alert('請先搜尋地點')
+async function toggleFavorite() {
+  const ctx = currentFavoriteContext.value
+  if (!ctx) {
+    alert('請先搜尋並選擇要收藏的地點、道路或路線')
     return
   }
 
-  if (selectedPlaceSaved.value) {
-    removeFavoriteById(selectedPlace.value.id)
+  if (currentFavoriteSaved.value) {
+    removeFavoriteById(ctx.id)
     return
   }
 
-  // 確保所有資料集都已載入
-  for (const ds of datasets.value) {
-    await ensureDatasetLoaded(ds)
-  }
+  if (ctx.type === 'place') {
+    const place = ctx.place
+    if (!place) return
 
-  const nearby = collectNearbyPoints(selectedPlace.value.lon, selectedPlace.value.lat, {
-    respectVisibility: false,
-    respectDistrict: false,
-    limit: 50,
-  })
+    for (const ds of datasets.value) {
+      await ensureDatasetLoaded(ds)
+    }
 
-  const next = [
-    ...favorites.value,
-    {
-      ...selectedPlace.value,
-      // 保留資料集與屬性，供推薦頁分類與顯示使用
+    const nearby = collectNearbyPoints(place.lon, place.lat, {
+      respectVisibility: false,
+      respectDistrict: false,
+      limit: 50,
+    })
+
+    const payload = {
+      ...place,
+      type: 'place',
       recommendations: nearby.map((r) => ({
         name: r.name,
         addr: r.addr,
@@ -475,10 +504,92 @@ async function toggleSelectedPlaceFavorite() {
         props: r.props || null,
       })),
       addedAt: new Date().toISOString(),
-    },
-  ]
-  favorites.value = next
-  saveFavorites(next)
+    }
+
+    const next = [...favorites.value, payload]
+    favorites.value = next
+    saveFavorites(next)
+    return
+  }
+
+  if (ctx.type === 'road') {
+    const constructionDs = datasets.value.find((ds) => ds.id === 'construction')
+    if (constructionDs) {
+      try { await ensureDatasetLoaded(constructionDs) } catch (_) {}
+    }
+
+    const matches = lastRoadFeatureCollection.value
+      ? collectRoadConstructionMatches(lastRoadFeatureCollection.value)
+      : []
+    const payload = {
+      id: ctx.id,
+      type: 'road',
+      name: ctx.name,
+      address: `${ctx.name} 道路`,
+      lon: ctx.center?.lon ?? null,
+      lat: ctx.center?.lat ?? null,
+      roadName: ctx.name,
+      roadSearchName: ctx.keyword || ctx.name,
+      roadOsmids: ctx.osmids,
+      roadDistanceThreshold: ROAD_CONSTRUCTION_DISTANCE_THRESHOLD,
+      recommendations: matches.map((item) => ({
+        name: item.name,
+        addr: item.addr,
+        dist: item.dist,
+        lon: item.lon,
+        lat: item.lat,
+        dsid: item.dsid,
+        props: item.props || null,
+      })),
+      addedAt: new Date().toISOString(),
+    }
+
+    const next = [...favorites.value, payload]
+    favorites.value = next
+    saveFavorites(next)
+    return
+  }
+
+  if (ctx.type === 'route') {
+    const constructionDs = datasets.value.find((ds) => ds.id === 'construction')
+    if (constructionDs) {
+      try { await ensureDatasetLoaded(constructionDs) } catch (_) {}
+    }
+
+    const featureCollection = ctx.featureCollection || lastRouteFeatureCollection.value
+    const matches = featureCollection
+      ? collectRoadConstructionMatches(featureCollection, ROUTE_CONSTRUCTION_DISTANCE_THRESHOLD)
+      : []
+
+    const payload = {
+      id: ctx.id,
+      type: 'route',
+      name: ctx.name,
+      address: ctx.name,
+      routeStart: ctx.startLabel || ctx.startInput,
+      routeEnd: ctx.endLabel || ctx.endInput,
+      startCoords: ctx.startCoords || null,
+      endCoords: ctx.endCoords || null,
+      distance: typeof ctx.distance === 'number' ? ctx.distance : null,
+      duration: typeof ctx.duration === 'number' ? ctx.duration : null,
+  routeDistanceThreshold: ROUTE_CONSTRUCTION_DISTANCE_THRESHOLD,
+      routeFeatureCollection: featureCollection,
+      recommendations: matches.map((item) => ({
+        name: item.name,
+        addr: item.addr,
+        dist: item.dist,
+        lon: item.lon,
+        lat: item.lat,
+        dsid: item.dsid,
+        props: item.props || null,
+      })),
+      addedAt: new Date().toISOString(),
+    }
+
+    const next = [...favorites.value, payload]
+    favorites.value = next
+    saveFavorites(next)
+  }
 }
 
 function clearSearchText() {
@@ -498,6 +609,26 @@ function clearRouteInputs() {
   clearRouteFromMap()
 }
 
+function clearRouteStart() {
+  if (!routeStart.value) return
+  routeStart.value = ''
+  clearRouteFromMap()
+}
+
+function clearRouteEnd() {
+  if (!routeEnd.value) return
+  routeEnd.value = ''
+  clearRouteFromMap()
+}
+
+function swapRouteEndpoints() {
+  if (!routeStart.value && !routeEnd.value) return
+  const nextStart = routeEnd.value
+  routeEnd.value = routeStart.value
+  routeStart.value = nextStart
+  clearRouteFromMap()
+}
+
 function clearRouteFromMap() {
   // 清除路線圖層
   if (map && map.getSource(ROUTE_SOURCE_ID)) {
@@ -513,6 +644,15 @@ function clearRouteFromMap() {
     })
   }
   currentRouteGeoJSON.value = null
+  currentRouteMeta.value = null
+  lastRouteFeatureCollection.value = null
+  routeMatchList.value = []
+  showRouteMatches.value = false
+  showRouteMatchDetail.value = false
+  selectedRouteMatch.value = null
+  routeMatchNotice.value = ''
+  routeMatchesReady.value = false
+  updateRoadConstructionHighlights([], null)
 }
 
 async function performRouteSearch() {
@@ -594,6 +734,50 @@ async function performRouteSearch() {
 
     currentRouteGeoJSON.value = routeGeoJSON
 
+    const routeFeatureCollection = {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        geometry: routeGeoJSON.geometry,
+        properties: {
+          dataset: 'route_search',
+          distance: route.distance,
+          duration: route.duration,
+        },
+      }],
+    }
+
+    const startLabel = startCoords.place || startCoords.addr || start
+    const endLabel = endCoords.place || endCoords.addr || end
+    const routeId = `route:${startCoords.lon.toFixed(6)},${startCoords.lat.toFixed(6)}->${endCoords.lon.toFixed(6)},${endCoords.lat.toFixed(6)}`
+    currentRouteMeta.value = {
+      id: routeId,
+      startInput: start,
+      endInput: end,
+      startLabel,
+      endLabel,
+      startCoords,
+      endCoords,
+      distance: route.distance,
+      duration: route.duration,
+      featureCollection: routeFeatureCollection,
+    }
+
+    lastRouteFeatureCollection.value = routeFeatureCollection
+    lastRoadFeatureCollection.value = null
+    selectedPlace.value = null
+    originMode.value = 'search'
+    showNearby.value = false
+    showDetailView.value = false
+    selectedNearbyItem.value = null
+    const existingPopups = document.querySelectorAll('.mapboxgl-popup')
+    existingPopups.forEach((p) => p.remove())
+
+    const constructionDs = datasets.value.find((ds) => ds.id === 'construction')
+    if (constructionDs) {
+      try { await ensureDatasetLoaded(constructionDs) } catch (_) {}
+    }
+
     // 3. 在地圖上顯示路線
     displayRouteOnMap(routeGeoJSON, startCoords, endCoords)
 
@@ -607,6 +791,13 @@ async function performRouteSearch() {
       padding: 80,
       maxZoom: 16
     })
+
+    if (!bounds.isEmpty()) {
+      const center = bounds.getCenter()
+      lastSearchLonLat.value = { lon: center.lng, lat: center.lat }
+    }
+
+    refreshRouteMatches(true)
 
   } catch (error) {
     console.error('路線規劃錯誤:', error)
@@ -824,6 +1015,7 @@ function applyDatasetFilter() {
   }
   computeNearbyForCurrentCenter()
   refreshRoadMatches()
+  refreshRouteMatches()
 }
 
 function toggleDatasetCheckbox(datasetId) {
@@ -904,193 +1096,6 @@ function collectNearbyPoints(lon, lat, options = {}) {
   return limit ? results.slice(0, limit) : results
 }
 
-function pointToSegmentDistanceMeters(plon, plat, a, b) {
-  if (!Array.isArray(a) || !Array.isArray(b)) return Number.POSITIVE_INFINITY
-  const cosLat = Math.cos(plat * Math.PI / 180)
-  const mPerDegLon = 111320 * cosLat
-  const mPerDegLat = 110574
-  const ax = (a[0] - plon) * mPerDegLon
-  const ay = (a[1] - plat) * mPerDegLat
-  const bx = (b[0] - plon) * mPerDegLon
-  const by = (b[1] - plat) * mPerDegLat
-  const dx = bx - ax
-  const dy = by - ay
-  if (dx === 0 && dy === 0) return Math.hypot(ax, ay)
-  const t = -(ax * dx + ay * dy) / (dx * dx + dy * dy)
-  if (t <= 0) return Math.hypot(ax, ay)
-  if (t >= 1) return Math.hypot(bx, by)
-  const projX = ax + t * dx
-  const projY = ay + t * dy
-  return Math.hypot(projX, projY)
-}
-
-function pointToLineStringDistanceMeters(plon, plat, coordinates) {
-  if (!Array.isArray(coordinates) || coordinates.length < 2) return Number.POSITIVE_INFINITY
-  let min = Number.POSITIVE_INFINITY
-  for (let i = 0; i < coordinates.length - 1; i++) {
-    const d = pointToSegmentDistanceMeters(plon, plat, coordinates[i], coordinates[i + 1])
-    if (d < min) min = d
-  }
-  return min
-}
-
-function collectRoadConstructionMatches(featureCollection, maxDistance = ROAD_CONSTRUCTION_DISTANCE_THRESHOLD) {
-  if (!featureCollection || !Array.isArray(featureCollection?.features)) return []
-  const constructionDs = datasets.value.find((ds) => ds.id === 'construction')
-  if (!constructionDs || !constructionDs.visible) return []
-  const cache = datasetCache.get('construction')
-  const constructionFeatures = cache?.geo?.features || []
-  if (!constructionFeatures.length) return []
-
-  const roadSegments = []
-  for (const f of featureCollection.features) {
-    const geom = f?.geometry
-    if (!geom) continue
-    if (geom.type === 'LineString') {
-      roadSegments.push(geom.coordinates)
-    } else if (geom.type === 'MultiLineString') {
-      for (const coords of geom.coordinates || []) roadSegments.push(coords)
-    }
-  }
-  if (!roadSegments.length) return []
-
-  const results = []
-  for (const feature of constructionFeatures) {
-    const geom = feature?.geometry
-    if (!geom || geom.type !== 'Point') continue
-    const [lon, lat] = geom.coordinates || []
-    if (typeof lon !== 'number' || typeof lat !== 'number') continue
-
-    let minDist = Number.POSITIVE_INFINITY
-    for (const coords of roadSegments) {
-      const d = pointToLineStringDistanceMeters(lon, lat, coords)
-      if (d < minDist) minDist = d
-      if (minDist <= maxDistance) break
-    }
-    if (minDist <= maxDistance) {
-      const props = feature.properties || {}
-      let name = props['DIGADD'] || props['位置'] || props['name'] || '(未命名)'
-      let addr = props['PURP'] || props['地址'] || props['road'] || ''
-      results.push({
-        dsid: 'construction',
-        name,
-        addr,
-        dist: Math.round(minDist),
-        lon,
-        lat,
-        props,
-      })
-    }
-  }
-
-  results.sort((a, b) => a.dist - b.dist)
-  return results
-}
-
-function updateRoadConstructionHighlights(matches, featureCollection) {
-  if (!map) return
-  ensureNearbyCircleLayer()
-  const pointFeatures = matches.map((item) => ({
-    type: 'Feature',
-    geometry: { type: 'Point', coordinates: [item.lon, item.lat] },
-    properties: { ...(item.props || {}), dataset: 'construction' },
-  }))
-
-  const lineFeatures = []
-  for (const f of featureCollection?.features || []) {
-    const geom = f?.geometry
-    if (!geom) continue
-    if (geom.type === 'LineString' || geom.type === 'MultiLineString') {
-      lineFeatures.push({
-        type: 'Feature',
-        geometry: geom,
-        properties: { ...(f.properties || {}), dataset: 'road_search' },
-      })
-    }
-  }
-
-  map.getSource('nearby-points-highlight')?.setData({ type: 'FeatureCollection', features: pointFeatures })
-  map.getSource('nearby-lines-highlight')?.setData({ type: 'FeatureCollection', features: lineFeatures })
-  map.getSource('nearby-circle')?.setData({ type: 'FeatureCollection', features: [] })
-  map.getSource('nearby-center')?.setData({ type: 'FeatureCollection', features: [] })
-}
-
-function refreshRoadMatches(autoOpen = false) {
-  if (!lastRoadFeatureCollection) {
-    roadMatchNotice.value = ''
-    return
-  }
-
-  const constructionDs = datasets.value.find((ds) => ds.id === 'construction')
-  if (!constructionDs || !constructionDs.visible) {
-    roadMatchList.value = []
-    roadMatchNotice.value = '請在設定中啟用「施工地點」資料集以查看道路施工據點'
-    showRoadMatches.value = false
-    showRoadMatchDetail.value = false
-    selectedRoadMatch.value = null
-    updateRoadConstructionHighlights([], lastRoadFeatureCollection)
-    return
-  }
-
-  const matches = collectRoadConstructionMatches(lastRoadFeatureCollection)
-  roadMatchList.value = matches
-
-  if (matches.length === 0) {
-    roadMatchNotice.value = '此道路 15 公尺內沒有符合條件的施工點'
-    showRoadMatches.value = false
-    showRoadMatchDetail.value = false
-    selectedRoadMatch.value = null
-  } else {
-    roadMatchNotice.value = ''
-    if (autoOpen) {
-      showRoadMatches.value = true
-      showRoadMatchDetail.value = false
-      selectedRoadMatch.value = null
-    } else if (showRoadMatchDetail.value && selectedRoadMatch.value) {
-      const current = matches.find((item) => item.lon === selectedRoadMatch.value.lon && item.lat === selectedRoadMatch.value.lat)
-      if (!current) {
-        showRoadMatchDetail.value = false
-        selectedRoadMatch.value = null
-      }
-    }
-  }
-
-  updateRoadConstructionHighlights(matches, lastRoadFeatureCollection)
-}
-
-function openRoadMatchList() {
-  if (!roadMatchList.value.length) return
-  showRoadMatches.value = true
-  showRoadMatchDetail.value = false
-  selectedRoadMatch.value = null
-}
-
-function closeRoadMatchList() {
-  showRoadMatches.value = false
-  showRoadMatchDetail.value = false
-  selectedRoadMatch.value = null
-  const existingPopups = document.querySelectorAll('.mapboxgl-popup')
-  existingPopups.forEach((p) => p.remove())
-}
-
-function showRoadMatchPopup(item) {
-  if (!item) return
-  if (!map) return
-  selectedRoadMatch.value = item
-  showRoadMatchDetail.value = true
-  showRoadMatches.value = true
-  const existingPopups = document.querySelectorAll('.mapboxgl-popup')
-  existingPopups.forEach((p) => p.remove())
-  flyToLngLat(item.lon, item.lat, 16, { bottom: 250 })
-  createMapPopup(item.props || {}, 'construction', [item.lon, item.lat])
-}
-
-function backToRoadMatchList() {
-  showRoadMatchDetail.value = false
-  selectedRoadMatch.value = null
-  const existingPopups = document.querySelectorAll('.mapboxgl-popup')
-  existingPopups.forEach((p) => p.remove())
-}
 
 
 function destPoint(lon, lat, bearingDeg, distanceMeters) {
@@ -1273,9 +1278,432 @@ function getCurrentCenterLonLat() {
 }
 
 function computeNearbyForCurrentCenter() {
-  if (lastRoadFeatureCollection) return
+  if (lastRoadFeatureCollection.value || lastRouteFeatureCollection.value) return
   const c = getCurrentCenterLonLat()
   computeNearby(c.lon, c.lat)
+}
+
+// ===== 道路搜尋與施工配對 =====
+const roadSuggestions = ref([])
+const showRoadSuggestions = ref(false)
+const isFetchingRoadSuggestions = ref(false)
+const isSearchingRoad = ref(false)
+const roadMatchList = ref([])
+const showRoadMatches = ref(false)
+const showRoadMatchDetail = ref(false)
+const selectedRoadMatch = ref(null)
+const roadMatchNotice = ref('')
+const roadMatchesReady = ref(false)
+
+const routeMatchList = ref([])
+const showRouteMatches = ref(false)
+const showRouteMatchDetail = ref(false)
+const selectedRouteMatch = ref(null)
+const routeMatchNotice = ref('')
+const routeMatchesReady = ref(false)
+const ROAD_CONSTRUCTION_DISTANCE_THRESHOLD = 15
+const ROUTE_CONSTRUCTION_DISTANCE_THRESHOLD = 50
+const isGlobalSearchButtonDisabled = computed(() => {
+  if (searchMode.value === 'place') {
+    return !(searchText.value || '').trim()
+  }
+  if (searchMode.value === 'road') {
+    if (isSearchingRoad.value) return true
+    return !(roadSearchText.value || '').trim()
+  }
+  return false
+})
+let latestRoadSuggestionToken = 0
+let skipNextRoadSuggestionFetch = false
+
+function clearRoadSearchData() {
+  lastRoadFeatureCollection.value = null
+  roadMatchList.value = []
+  showRoadMatches.value = false
+  showRoadMatchDetail.value = false
+  selectedRoadMatch.value = null
+  roadMatchNotice.value = ''
+  roadMatchesReady.value = false
+  if (!map) return
+  const src = map.getSource(ROAD_SEARCH_SOURCE_ID)
+  if (src) {
+    src.setData({ type: 'FeatureCollection', features: [] })
+  }
+  updateRoadConstructionHighlights([], null)
+}
+
+watch(roadSearchText, async (value) => {
+  if (searchMode.value !== 'road') return
+  if (skipNextRoadSuggestionFetch) {
+    skipNextRoadSuggestionFetch = false
+    return
+  }
+  const keyword = value.trim()
+  if (!keyword) {
+    roadSuggestions.value = []
+    showRoadSuggestions.value = false
+    return
+  }
+
+  const token = ++latestRoadSuggestionToken
+  isFetchingRoadSuggestions.value = true
+  try {
+    const items = await suggestRoadSegments(keyword)
+    if (token === latestRoadSuggestionToken) {
+      roadSuggestions.value = items
+      showRoadSuggestions.value = items.length > 0
+    }
+  } catch (err) {
+    if (token === latestRoadSuggestionToken) {
+      console.warn('Failed to fetch road suggestions', err)
+      roadSuggestions.value = []
+      showRoadSuggestions.value = false
+    }
+  } finally {
+    if (token === latestRoadSuggestionToken) {
+      isFetchingRoadSuggestions.value = false
+    }
+  }
+})
+
+function selectRoadSuggestion(name) {
+  skipNextRoadSuggestionFetch = true
+  roadSearchText.value = name
+  showRoadSuggestions.value = false
+}
+
+function openRoadSuggestionDropdown() {
+  if (searchMode.value !== 'road') return
+  if (roadSuggestions.value.length > 0) {
+    showRoadSuggestions.value = true
+  }
+}
+
+function closeRoadSuggestionDropdown() {
+  setTimeout(() => {
+    showRoadSuggestions.value = false
+  }, 150)
+}
+
+function pointToSegmentDistanceMeters(plon, plat, a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b)) return Number.POSITIVE_INFINITY
+  const cosLat = Math.cos(plat * Math.PI / 180)
+  const mPerDegLon = 111320 * cosLat
+  const mPerDegLat = 110574
+  const ax = (a[0] - plon) * mPerDegLon
+  const ay = (a[1] - plat) * mPerDegLat
+  const bx = (b[0] - plon) * mPerDegLon
+  const by = (b[1] - plat) * mPerDegLat
+  const dx = bx - ax
+  const dy = by - ay
+  if (dx === 0 && dy === 0) return Math.hypot(ax, ay)
+  const t = -(ax * dx + ay * dy) / (dx * dx + dy * dy)
+  if (t <= 0) return Math.hypot(ax, ay)
+  if (t >= 1) return Math.hypot(bx, by)
+  const projX = ax + t * dx
+  const projY = ay + t * dy
+  return Math.hypot(projX, projY)
+}
+
+function pointToLineStringDistanceMeters(plon, plat, coordinates) {
+  if (!Array.isArray(coordinates) || coordinates.length < 2) return Number.POSITIVE_INFINITY
+  let min = Number.POSITIVE_INFINITY
+  for (let i = 0; i < coordinates.length - 1; i++) {
+    const d = pointToSegmentDistanceMeters(plon, plat, coordinates[i], coordinates[i + 1])
+    if (d < min) min = d
+  }
+  return min
+}
+
+function collectRoadConstructionMatches(featureCollection, maxDistance = ROAD_CONSTRUCTION_DISTANCE_THRESHOLD) {
+  if (!featureCollection || !Array.isArray(featureCollection?.features)) return []
+  const constructionDs = datasets.value.find((ds) => ds.id === 'construction')
+  if (!constructionDs || !constructionDs.visible) return []
+  const cache = datasetCache.get('construction')
+  const constructionFeatures = cache?.geo?.features || []
+  if (!constructionFeatures.length) return []
+
+  const roadSegments = []
+  for (const f of featureCollection.features) {
+    const geom = f?.geometry
+    if (!geom) continue
+    if (geom.type === 'LineString') {
+      roadSegments.push(geom.coordinates)
+    } else if (geom.type === 'MultiLineString') {
+      for (const coords of geom.coordinates || []) roadSegments.push(coords)
+    }
+  }
+  if (!roadSegments.length) return []
+
+  const results = []
+  for (const feature of constructionFeatures) {
+    const geom = feature?.geometry
+    if (!geom || geom.type !== 'Point') continue
+    const [lon, lat] = geom.coordinates || []
+    if (typeof lon !== 'number' || typeof lat !== 'number') continue
+
+    let minDist = Number.POSITIVE_INFINITY
+    for (const coords of roadSegments) {
+      const d = pointToLineStringDistanceMeters(lon, lat, coords)
+      if (d < minDist) minDist = d
+      if (minDist <= maxDistance) break
+    }
+    if (minDist <= maxDistance) {
+      const props = feature.properties || {}
+      let name = props['DIGADD'] || props['位置'] || props['name'] || '(未命名)'
+      let addr = props['PURP'] || props['地址'] || props['road'] || ''
+      results.push({
+        dsid: 'construction',
+        name,
+        addr,
+        dist: Math.round(minDist),
+        lon,
+        lat,
+        props,
+      })
+    }
+  }
+
+  results.sort((a, b) => a.dist - b.dist)
+  return results
+}
+
+function updateRoadConstructionHighlights(matches, featureCollection) {
+  if (!map) return
+  ensureNearbyCircleLayer()
+  const pointFeatures = matches.map((item) => ({
+    type: 'Feature',
+    geometry: { type: 'Point', coordinates: [item.lon, item.lat] },
+    properties: { ...(item.props || {}), dataset: 'construction' },
+  }))
+
+  const lineFeatures = []
+  for (const f of featureCollection?.features || []) {
+    const geom = f?.geometry
+    if (!geom) continue
+    if (geom.type === 'LineString' || geom.type === 'MultiLineString') {
+      lineFeatures.push({
+        type: 'Feature',
+        geometry: geom,
+        properties: { ...(f.properties || {}), dataset: 'road_search' },
+      })
+    }
+  }
+
+  map.getSource('nearby-points-highlight')?.setData({ type: 'FeatureCollection', features: pointFeatures })
+  map.getSource('nearby-lines-highlight')?.setData({ type: 'FeatureCollection', features: lineFeatures })
+  map.getSource('nearby-circle')?.setData({ type: 'FeatureCollection', features: [] })
+  map.getSource('nearby-center')?.setData({ type: 'FeatureCollection', features: [] })
+}
+
+function refreshRoadMatches(autoOpen = false) {
+  if (!lastRoadFeatureCollection.value) {
+    roadMatchNotice.value = ''
+    roadMatchesReady.value = false
+    return
+  }
+
+  const constructionDs = datasets.value.find((ds) => ds.id === 'construction')
+  if (!constructionDs || !constructionDs.visible) {
+    roadMatchList.value = []
+    roadMatchNotice.value = '請在設定中啟用「施工地點」資料集以查看道路施工據點'
+    showRoadMatches.value = false
+    showRoadMatchDetail.value = false
+    selectedRoadMatch.value = null
+    roadMatchesReady.value = false
+    updateRoadConstructionHighlights([], lastRoadFeatureCollection.value)
+    return
+  }
+
+  const matches = collectRoadConstructionMatches(lastRoadFeatureCollection.value)
+  roadMatchList.value = matches
+  roadMatchesReady.value = true
+
+  if (matches.length === 0) {
+    roadMatchNotice.value = ''
+    showRoadMatches.value = false
+    showRoadMatchDetail.value = false
+    selectedRoadMatch.value = null
+  } else {
+    roadMatchNotice.value = ''
+    if (autoOpen) {
+      showRoadMatches.value = true
+      showRoadMatchDetail.value = false
+      selectedRoadMatch.value = null
+    } else if (showRoadMatchDetail.value && selectedRoadMatch.value) {
+      const current = matches.find((item) => item.lon === selectedRoadMatch.value.lon && item.lat === selectedRoadMatch.value.lat)
+      if (!current) {
+        showRoadMatchDetail.value = false
+        selectedRoadMatch.value = null
+      }
+    }
+  }
+
+  updateRoadConstructionHighlights(matches, lastRoadFeatureCollection.value)
+}
+
+function refreshRouteMatches(autoOpen = false) {
+  if (!lastRouteFeatureCollection.value) {
+    routeMatchNotice.value = ''
+    routeMatchesReady.value = false
+    return
+  }
+
+  const constructionDs = datasets.value.find((ds) => ds.id === 'construction')
+  if (!constructionDs || !constructionDs.visible) {
+    routeMatchList.value = []
+    routeMatchNotice.value = '請在設定中啟用「施工地點」資料集以查看路線沿線施工據點'
+    showRouteMatches.value = false
+    showRouteMatchDetail.value = false
+    selectedRouteMatch.value = null
+    routeMatchesReady.value = false
+    updateRoadConstructionHighlights([], lastRouteFeatureCollection.value)
+    return
+  }
+
+  const matches = collectRoadConstructionMatches(lastRouteFeatureCollection.value, ROUTE_CONSTRUCTION_DISTANCE_THRESHOLD)
+  routeMatchList.value = matches
+  routeMatchesReady.value = true
+
+  if (matches.length === 0) {
+    routeMatchNotice.value = ''
+    showRouteMatches.value = false
+    showRouteMatchDetail.value = false
+    selectedRouteMatch.value = null
+  } else {
+    routeMatchNotice.value = ''
+    if (autoOpen) {
+      showRouteMatches.value = true
+      showRouteMatchDetail.value = false
+      selectedRouteMatch.value = null
+    } else if (showRouteMatchDetail.value && selectedRouteMatch.value) {
+      const current = matches.find((item) => item.lon === selectedRouteMatch.value.lon && item.lat === selectedRouteMatch.value.lat)
+      if (!current) {
+        showRouteMatchDetail.value = false
+        selectedRouteMatch.value = null
+      }
+    }
+  }
+
+  updateRoadConstructionHighlights(matches, lastRouteFeatureCollection.value)
+}
+
+function openRoadMatchList() {
+  if (!roadMatchList.value.length) return
+  showRoadMatches.value = true
+  showRoadMatchDetail.value = false
+  selectedRoadMatch.value = null
+}
+
+function closeRoadMatchList() {
+  showRoadMatches.value = false
+  showRoadMatchDetail.value = false
+  selectedRoadMatch.value = null
+  const existingPopups = document.querySelectorAll('.mapboxgl-popup')
+  existingPopups.forEach((p) => p.remove())
+}
+
+function showRoadMatchPopup(item) {
+  if (!item || !map) return
+  selectedRoadMatch.value = item
+  showRoadMatchDetail.value = true
+  showRoadMatches.value = true
+  const existingPopups = document.querySelectorAll('.mapboxgl-popup')
+  existingPopups.forEach((p) => p.remove())
+  flyToLngLat(item.lon, item.lat, 16, { bottom: 250 })
+  createMapPopup(item.props || {}, 'construction', [item.lon, item.lat])
+}
+
+function backToRoadMatchList() {
+  showRoadMatchDetail.value = false
+  selectedRoadMatch.value = null
+  const existingPopups = document.querySelectorAll('.mapboxgl-popup')
+  existingPopups.forEach((p) => p.remove())
+}
+
+function openRouteMatchList() {
+  if (!routeMatchList.value.length) return
+  showRouteMatches.value = true
+  showRouteMatchDetail.value = false
+  selectedRouteMatch.value = null
+}
+
+function closeRouteMatchList() {
+  showRouteMatches.value = false
+  showRouteMatchDetail.value = false
+  selectedRouteMatch.value = null
+  const existingPopups = document.querySelectorAll('.mapboxgl-popup')
+  existingPopups.forEach((p) => p.remove())
+}
+
+function showRouteMatchPopup(item) {
+  if (!item || !map) return
+  selectedRouteMatch.value = item
+  showRouteMatchDetail.value = true
+  showRouteMatches.value = true
+  const existingPopups = document.querySelectorAll('.mapboxgl-popup')
+  existingPopups.forEach((p) => p.remove())
+  flyToLngLat(item.lon, item.lat, 16, { bottom: 250 })
+  createMapPopup(item.props || {}, 'construction', [item.lon, item.lat])
+}
+
+function backToRouteMatchList() {
+  showRouteMatchDetail.value = false
+  selectedRouteMatch.value = null
+  const existingPopups = document.querySelectorAll('.mapboxgl-popup')
+  existingPopups.forEach((p) => p.remove())
+}
+
+async function performRoadSearch() {
+  const kw = (roadSearchText.value || '').trim()
+  if (!kw) return
+
+  isSearchingRoad.value = true
+  try {
+    const result = await fetchRoadSegmentsByName(kw)
+    showRoadSuggestions.value = false
+    const features = Array.isArray(result?.features) ? result.features.filter((f) => f?.geometry) : []
+    if (features.length === 0) {
+      clearRoadSearchData()
+      alert('找不到符合的道路，請確認名稱是否正確')
+      return
+    }
+
+    const collection = {
+      type: 'FeatureCollection',
+      features: features.map((f) => ({
+        type: 'Feature',
+        properties: { ...(f.properties || {}), dataset: 'road_search' },
+        geometry: f.geometry,
+      })),
+    }
+
+    const bounds = computeBounds(collection)
+    const fittedBounds = setRoadSearchData(collection, bounds)
+    clearSearchMarker()
+    selectedPlace.value = null
+    originMode.value = 'search'
+    showNearby.value = false
+    showDetailView.value = false
+    selectedNearbyItem.value = null
+    const existingPopups = document.querySelectorAll('.mapboxgl-popup')
+    existingPopups.forEach((p) => p.remove())
+    const constructionDs = datasets.value.find((ds) => ds.id === 'construction')
+    if (constructionDs) {
+      try { await ensureDatasetLoaded(constructionDs) } catch (_) {}
+    }
+  lastRoadFeatureCollection.value = collection
+    refreshRoadMatches(true)
+    if (fittedBounds && !fittedBounds.isEmpty()) {
+      const center = fittedBounds.getCenter()
+      lastSearchLonLat.value = { lon: center.lng, lat: center.lat }
+    }
+  } catch (err) {
+    console.warn('Failed to search road segments', err)
+    alert('搜尋道路資料時發生錯誤，請稍後再試')
+  } finally {
+    isSearchingRoad.value = false
+  }
 }
 
 // ===== 地名搜尋（限定台北市邊界）=====
@@ -1359,58 +1787,6 @@ async function geocodePlaceInTaipei(q) {
 }
 
 // ===== 搜尋與清除 =====
-async function performRoadSearch() {
-  const kw = (roadSearchText.value || '').trim()
-  if (!kw) return
-
-  isSearchingRoad.value = true
-  try {
-    const result = await fetchRoadSegmentsByName(kw)
-    showRoadSuggestions.value = false
-    const features = Array.isArray(result?.features) ? result.features.filter((f) => f?.geometry) : []
-    if (features.length === 0) {
-      clearRoadSearchData()
-      alert('找不到符合的道路，請確認名稱是否正確')
-      return
-    }
-
-    const collection = {
-      type: 'FeatureCollection',
-      features: features.map((f) => ({
-        type: 'Feature',
-        properties: { ...(f.properties || {}), dataset: 'road_search' },
-        geometry: f.geometry,
-      })),
-    }
-
-    const bounds = computeBounds(collection)
-    const fittedBounds = setRoadSearchData(collection, bounds)
-    clearSearchMarker()
-    selectedPlace.value = null
-    originMode.value = 'search'
-    showNearby.value = false
-    showDetailView.value = false
-    selectedNearbyItem.value = null
-    const existingPopups = document.querySelectorAll('.mapboxgl-popup')
-    existingPopups.forEach((p) => p.remove())
-    const constructionDs = datasets.value.find((ds) => ds.id === 'construction')
-    if (constructionDs) {
-      try { await ensureDatasetLoaded(constructionDs) } catch (_) {}
-    }
-    lastRoadFeatureCollection = collection
-    refreshRoadMatches(true)
-    if (fittedBounds && !fittedBounds.isEmpty()) {
-      const center = fittedBounds.getCenter()
-      lastSearchLonLat.value = { lon: center.lng, lat: center.lat }
-    }
-  } catch (err) {
-    console.warn('Failed to search road segments', err)
-    alert('搜尋道路資料時發生錯誤，請稍後再試')
-  } finally {
-    isSearchingRoad.value = false
-  }
-}
-
 async function goSearch() {
   if (searchMode.value === 'road') {
     await performRoadSearch()
@@ -1488,6 +1864,15 @@ function clearSearch() {
     lastSearchLonLat.value = null
     originMode.value = 'gps'
     selectedPlace.value = null
+    const c = userLonLat.value || { lon: TPE_CENTER[0], lat: TPE_CENTER[1] }
+    if (map) {
+      map.flyTo({ center: [c.lon, c.lat], zoom: Math.max(map.getZoom() ?? 0, 14) })
+    }
+    computeNearby(c.lon, c.lat)
+  } else if (searchMode.value === 'route') {
+    clearRouteInputs()
+    lastSearchLonLat.value = null
+    originMode.value = 'gps'
     const c = userLonLat.value || { lon: TPE_CENTER[0], lat: TPE_CENTER[1] }
     if (map) {
       map.flyTo({ center: [c.lon, c.lat], zoom: Math.max(map.getZoom() ?? 0, 14) })
@@ -1593,64 +1978,39 @@ onBeforeUnmount(() => {
             >
               <option value="place">地點</option>
               <option value="road">道路</option>
-              <option value="route">起訖點</option>
+              <option value="route">路線</option>
             </select>
 
-            <div class="relative flex-1">
-              <input
-                v-if="searchMode === 'place'"
-                v-model="searchText"
-                @keyup.enter="goSearch"
-                type="text"
-                placeholder="輸入地點或地址"
-                class="w-full rounded-full border border-gray-300 bg-white pl-4 pr-20 py-2.5 text-sm shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
-              />
-              <input
-                v-else-if="searchMode === 'road'"
-                v-model="roadSearchText"
-                @keyup.enter="goSearch"
-                @focus="openRoadSuggestionDropdown"
-                @blur="closeRoadSuggestionDropdown"
-                type="text"
-                placeholder="輸入道路名稱"
-                class="w-full rounded-full border border-gray-300 bg-white pl-4 pr-20 py-2.5 text-sm shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
-              />
-              <!-- 起訖點模式：兩個輸入框 -->
-              <div v-else-if="searchMode === 'route'" class="flex flex-col gap-2">
-                <input
-                  v-model="routeStart"
-                  @keyup.enter="goSearch"
-                  type="text"
-                  placeholder="起點地址"
-                  class="w-full rounded-full border border-gray-300 bg-white pl-4 pr-20 py-2.5 text-sm shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
-                />
-                <input
-                  v-model="routeEnd"
-                  @keyup.enter="goSearch"
-                  type="text"
-                  placeholder="終點地址"
-                  class="w-full rounded-full border border-gray-300 bg-white pl-4 pr-20 py-2.5 text-sm shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
-                />
-              </div>
-
-              <div v-if="searchMode !== 'route'" class="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
-                <button
-                  v-if="(searchMode === 'road' ? roadSearchText : searchText)"
-                  @click="clearSearchText"
-                  type="button"
-                  class="flex h-7 w-7 items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-                  title="清除輸入"
-                >
-                  <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                  </svg>
-                </button>
+            <div class="flex-1">
+              <div v-if="searchMode === 'place'" class="flex items-center gap-2">
+                <div class="relative flex-1">
+                  <input
+                    v-model="searchText"
+                    @keyup.enter="goSearch"
+                    type="text"
+                    placeholder="輸入地點或地址"
+                    class="w-full rounded-full border border-gray-300 bg-white pl-4 pr-12 py-2.5 text-sm shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
+                  />
+                  <button
+                    v-if="searchText"
+                    @click="clearSearchText"
+                    type="button"
+                    class="absolute right-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                    title="清除輸入"
+                  >
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                  </button>
+                </div>
                 <button
                   @click="goSearch"
                   type="button"
-                  class="flex h-7 w-7 items-center justify-center rounded-full bg-sky-500 text-white hover:bg-sky-600"
-                  :disabled="searchMode === 'road' && isSearchingRoad"
-                  :class="{ 'opacity-60 cursor-not-allowed': searchMode === 'road' && isSearchingRoad }"
+                  class="flex h-10 w-10 items-center justify-center rounded-full border shadow-sm transition-colors"
+                  :disabled="isGlobalSearchButtonDisabled"
+                  :class="isGlobalSearchButtonDisabled
+                    ? 'border-sky-200 bg-sky-100 text-sky-500 cursor-not-allowed'
+                    : 'border-sky-500 bg-sky-500 text-white hover:bg-sky-600'"
                   title="搜尋"
                 >
                   <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1658,45 +2018,136 @@ onBeforeUnmount(() => {
                   </svg>
                 </button>
               </div>
-              
-              <!-- 起訖點模式的搜尋按鈕（獨立顯示） -->
-              <div v-else class="mt-2 flex justify-end gap-2">
-                <button
-                  v-if="routeStart || routeEnd"
-                  @click="clearRouteInputs"
-                  type="button"
-                  class="rounded-full border border-gray-300 bg-white px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
-                >
-                  清除
-                </button>
+
+              <div v-else-if="searchMode === 'road'" class="flex items-start gap-2">
+                <div class="relative flex-1">
+                  <input
+                    v-model="roadSearchText"
+                    @keyup.enter="goSearch"
+                    @focus="openRoadSuggestionDropdown"
+                    @blur="closeRoadSuggestionDropdown"
+                    type="text"
+                    placeholder="輸入道路名稱"
+                    class="w-full rounded-full border border-gray-300 bg-white pl-4 pr-12 py-2.5 text-sm shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
+                  />
+                  <button
+                    v-if="roadSearchText"
+                    @click="clearSearchText"
+                    type="button"
+                    class="absolute right-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                    title="清除輸入"
+                  >
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                  </button>
+
+                  <div
+                    v-if="showRoadSuggestions || isFetchingRoadSuggestions"
+                    class="absolute left-0 right-0 top-full mt-2 max-h-56 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg"
+                  >
+                    <div v-if="isFetchingRoadSuggestions" class="px-4 py-3 text-sm text-gray-500">載入中...</div>
+                    <template v-else>
+                      <button
+                        v-for="name in roadSuggestions"
+                        :key="name"
+                        type="button"
+                        class="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-sky-50"
+                        @mousedown.prevent="selectRoadSuggestion(name)"
+                      >
+                        {{ name }}
+                      </button>
+                      <div v-if="roadSuggestions.length === 0" class="px-4 py-3 text-sm text-gray-500">沒有符合的道路</div>
+                    </template>
+                  </div>
+                </div>
                 <button
                   @click="goSearch"
                   type="button"
-                  class="rounded-full bg-sky-500 px-6 py-2 text-sm text-white hover:bg-sky-600"
-                  :disabled="!routeStart || !routeEnd"
-                  :class="{ 'opacity-60 cursor-not-allowed': !routeStart || !routeEnd }"
+                  class="flex h-10 w-10 items-center justify-center rounded-full border shadow-sm transition-colors"
+                  :disabled="isGlobalSearchButtonDisabled"
+                  :class="isGlobalSearchButtonDisabled
+                    ? 'border-sky-200 bg-sky-100 text-sky-500 cursor-not-allowed'
+                    : 'border-sky-500 bg-sky-500 text-white hover:bg-sky-600'"
+                  title="搜尋"
                 >
-                  規劃路線
+                  <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                  </svg>
                 </button>
               </div>
 
-              <div
-                v-if="searchMode === 'road' && (showRoadSuggestions || isFetchingRoadSuggestions)"
-                class="absolute left-0 right-0 top-full mt-2 max-h-56 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg"
-              >
-                <div v-if="isFetchingRoadSuggestions" class="px-4 py-3 text-sm text-gray-500">載入中...</div>
-                <template v-else>
+              <!-- 起訖點模式：兩個輸入框 -->
+              <div v-else class="grid grid-cols-[1fr_auto] gap-x-2 gap-y-2 items-center">
+                <div class="relative">
+                  <input
+                    v-model="routeStart"
+                    @keyup.enter="goSearch"
+                    type="text"
+                    placeholder="起點地址"
+                    class="w-full rounded-full border border-gray-300 bg-white pl-4 pr-12 py-2.5 text-sm shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
+                  />
                   <button
-                    v-for="name in roadSuggestions"
-                    :key="name"
+                    v-if="routeStart"
+                    @click="clearRouteStart"
                     type="button"
-                    class="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-sky-50"
-                    @mousedown.prevent="selectRoadSuggestion(name)"
+                    class="absolute right-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                    title="清除起點"
                   >
-                    {{ name }}
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
                   </button>
-                  <div v-if="roadSuggestions.length === 0" class="px-4 py-3 text-sm text-gray-500">沒有符合的道路</div>
-                </template>
+                </div>
+                <button
+                  @click="swapRouteEndpoints"
+                  type="button"
+                  :disabled="!routeStart && !routeEnd"
+                  class="flex h-10 w-10 items-center justify-center rounded-full border shadow-sm transition-colors"
+                  :class="(!routeStart && !routeEnd)
+                    ? 'border-gray-200 bg-white text-gray-300 cursor-not-allowed'
+                    : 'border-sky-200 bg-white text-sky-600 hover:bg-sky-50'"
+                  title="交換起訖點"
+                >
+                  <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                    <path d="M9 4l-3.5 3.5H8v9h2V7.5h2.5L9 4z"></path>
+                    <path d="M15 20l3.5-3.5H16V7h-2v9.5h-2.5L15 20z"></path>
+                  </svg>
+                </button>
+                <div class="relative">
+                  <input
+                    v-model="routeEnd"
+                    @keyup.enter="goSearch"
+                    type="text"
+                    placeholder="終點地址"
+                    class="w-full rounded-full border border-gray-300 bg-white pl-4 pr-12 py-2.5 text-sm shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
+                  />
+                  <button
+                    v-if="routeEnd"
+                    @click="clearRouteEnd"
+                    type="button"
+                    class="absolute right-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                    title="清除終點"
+                  >
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                  </button>
+                </div>
+                <button
+                  @click="goSearch"
+                  type="button"
+                  :disabled="!routeStart || !routeEnd"
+                  class="flex h-10 w-10 items-center justify-center rounded-full border shadow-sm transition-colors"
+                  :class="(!routeStart || !routeEnd)
+                    ? 'border-sky-200 bg-sky-100 text-sky-500 cursor-not-allowed'
+                    : 'border-sky-500 bg-sky-500 text-white hover:bg-sky-600'"
+                  title="規劃路線"
+                >
+                  <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                  </svg>
+                </button>
               </div>
             </div>
           </div>
@@ -1728,17 +2179,20 @@ onBeforeUnmount(() => {
 
               <!-- 收藏按鈕 -->
               <button
-                @click="toggleSelectedPlaceFavorite"
+                @click="toggleFavorite"
                 type="button"
                 :class="[
                   'flex h-11 w-11 items-center justify-center rounded-full border shadow-md transition-colors',
-                  selectedPlaceSaved 
+                  currentFavoriteSaved 
                     ? 'border-red-400 bg-red-50 text-red-500' 
-                    : 'border-gray-300 bg-white text-gray-400 hover:bg-gray-50'
+                    : currentFavoriteContext 
+                      ? 'border-gray-300 bg-white text-gray-400 hover:bg-gray-50'
+                      : 'border-gray-200 bg-gray-50 text-gray-300 cursor-not-allowed'
                 ]"
-                title="收藏地點"
+                :disabled="!currentFavoriteContext"
+                :title="currentFavoriteContext?.type === 'road' ? '收藏道路' : currentFavoriteContext?.type === 'route' ? '收藏路線' : '收藏地點'"
               >
-                <svg v-if="selectedPlaceSaved" class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                <svg v-if="currentFavoriteSaved" class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
                 </svg>
                 <svg v-else class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1814,7 +2268,79 @@ onBeforeUnmount(() => {
 
           <!-- 附近列表 -->
           <div class="pointer-events-none absolute inset-x-0 bottom-0 px-2 pb-2">
-            <template v-if="roadMatchList.length || roadMatchNotice">
+            <template v-if="routeMatchesReady">
+              <div v-if="routeMatchList.length">
+                <div v-if="showRouteMatches && showRouteMatchDetail && selectedRouteMatch" class="pointer-events-auto w-full rounded-2xl border border-gray-200 bg-white/95 shadow-sm">
+                  <div class="flex items-center justify-between px-4 py-3">
+                    <div class="min-w-0 flex-1">
+                      <div class="font-medium truncate">{{ selectedRouteMatch.name }}</div>
+                      <div class="truncate text-xs text-gray-600">{{ selectedRouteMatch.addr }}</div>
+                    </div>
+                    <div class="flex items-center gap-3 ml-3">
+                      <div class="whitespace-nowrap text-sm font-semibold">距路線 {{ selectedRouteMatch.dist }} 公尺</div>
+                    </div>
+                  </div>
+                  <div class="px-4 pb-3">
+                    <button
+                      class="w-full rounded border px-3 py-2 text-sm hover:bg-gray-100 transition-colors text-gray-700"
+                      @click="backToRouteMatchList"
+                    >
+                      ← 返回路線施工列表
+                    </button>
+                  </div>
+                </div>
+                <div v-else-if="showRouteMatches" class="pointer-events-auto w-full rounded-2xl border border-gray-200 bg-white/95 shadow-sm">
+                  <button
+                    class="flex w-full items-center justify-between rounded-t-2xl px-4 py-3 text-left font-medium"
+                    @click="closeRouteMatchList"
+                  >
+                    <span>路線沿線施工據點（{{ routeMatchList.length }}）</span>
+                    <span class="text-sm text-gray-500">收合</span>
+                  </button>
+                  <div class="max-h-48 overflow-y-auto px-4 pb-4">
+                    <ul class="divide-y">
+                      <li
+                        v-for="(it, idx) in routeMatchList"
+                        :key="idx"
+                        class="flex items-center justify-between py-2"
+                      >
+                        <div class="min-w-0">
+                          <div class="font-medium truncate">{{ it.name }}</div>
+                          <div class="truncate text-xs text-gray-600">{{ it.addr }}</div>
+                        </div>
+                        <div class="flex items-center gap-3">
+                          <div class="whitespace-nowrap text-sm font-semibold">{{ it.dist }} 公尺</div>
+                          <button
+                            class="rounded border px-2 py-1 text-xs hover:bg-gray-100 transition-colors"
+                            @click="showRouteMatchPopup(it)"
+                          >
+                            詳細資訊
+                          </button>
+                        </div>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+
+                <button
+                  v-else
+                  class="pointer-events-auto mx-auto flex items-center gap-2 rounded-full bg-white/95 px-4 py-2 text-sm font-medium shadow"
+                  @click="openRouteMatchList"
+                >
+                  查看路線施工據點（{{ routeMatchList.length }}）
+                </button>
+              </div>
+              <div v-else class="pointer-events-auto flex w-fit mx-auto flex-col items-center gap-1 rounded-full bg-white/95 px-4 py-2 text-sm font-medium shadow text-center">
+                <span class="whitespace-nowrap">路線沿線施工據點（0）</span>
+                <span class="text-xs font-normal text-gray-600">{{ ROUTE_CONSTRUCTION_DISTANCE_THRESHOLD }} 公尺內沒有符合條件的據點</span>
+              </div>
+            </template>
+            <template v-else-if="routeMatchNotice">
+              <div class="pointer-events-auto mx-auto flex items-center gap-2 rounded-full bg-white/95 px-4 py-2 text-sm font-medium shadow">
+                {{ routeMatchNotice }}
+              </div>
+            </template>
+            <template v-else-if="roadMatchesReady">
               <div v-if="roadMatchList.length">
                 <div v-if="showRoadMatches && showRoadMatchDetail && selectedRoadMatch" class="pointer-events-auto w-full rounded-2xl border border-gray-200 bg-white/95 shadow-sm">
                   <div class="flex items-center justify-between px-4 py-3">
@@ -1867,6 +2393,7 @@ onBeforeUnmount(() => {
                     </ul>
                   </div>
                 </div>
+                
                 <button
                   v-else
                   class="pointer-events-auto mx-auto flex items-center gap-2 rounded-full bg-white/95 px-4 py-2 text-sm font-medium shadow"
@@ -1875,7 +2402,13 @@ onBeforeUnmount(() => {
                   查看道路施工據點（{{ roadMatchList.length }}）
                 </button>
               </div>
-              <div v-else class="pointer-events-auto mx-auto flex items-center gap-2 rounded-full bg-white/95 px-4 py-2 text-sm font-medium shadow">
+              <div v-else class="pointer-events-auto flex w-fit mx-auto flex-col items-center gap-1 rounded-full bg-white/95 px-4 py-2 text-sm font-medium shadow text-center">
+                <span class="whitespace-nowrap">道路沿線施工據點（0）</span>
+                <span class="text-xs font-normal text-gray-600">{{ ROAD_CONSTRUCTION_DISTANCE_THRESHOLD }} 公尺內沒有符合條件的據點</span>
+              </div>
+            </template>
+            <template v-else-if="roadMatchNotice">
+              <div class="pointer-events-auto mx-auto flex items-center gap-2 rounded-full bg-white/95 px-4 py-2 text-sm font-medium shadow">
                 {{ roadMatchNotice }}
               </div>
             </template>

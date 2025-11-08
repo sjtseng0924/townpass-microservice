@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import TopTabs from './TopTabs.vue'
 import { getConstructionData, updateConstructionData, getConstructionNotices } from '@/service/api'
@@ -16,6 +16,48 @@ const NOTIFICATION_STORAGE_KEY = 'placeNotifications'
 const ROAD_WATCH_KEY = 'roadWatchEnabled'
 const constructionNotices = ref([]) // 施工公告資料
 const loadingNotices = ref(false)
+const ROAD_NOTICE_DISTANCE_M = 15
+const ROUTE_NOTICE_DISTANCE_M = 50
+
+const favoriteTypeBadges = {
+  place: 'bg-emerald-100 text-emerald-700',
+  road: 'bg-sky-100 text-sky-700',
+  route: 'bg-violet-100 text-violet-700',
+}
+
+function normalizeFavorite(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const type = raw.type === 'road' ? 'road' : raw.type === 'route' ? 'route' : 'place'
+  const normalized = {
+    ...raw,
+    type,
+    recommendations: Array.isArray(raw?.recommendations) ? raw.recommendations : [],
+  }
+  if (type === 'road') {
+    normalized.roadDistanceThreshold = typeof raw.roadDistanceThreshold === 'number'
+      ? raw.roadDistanceThreshold
+      : ROAD_NOTICE_DISTANCE_M
+    if (!normalized.address) {
+      const roadName = raw.roadName || raw.name || '道路'
+      normalized.address = `${roadName} 道路`
+    }
+  } else if (type === 'route') {
+    normalized.routeDistanceThreshold = typeof raw.routeDistanceThreshold === 'number'
+      ? raw.routeDistanceThreshold
+      : ROUTE_NOTICE_DISTANCE_M
+    normalized.routeStart = raw.routeStart || raw.startLabel || raw.startInput || ''
+    normalized.routeEnd = raw.routeEnd || raw.endLabel || raw.endInput || ''
+    if (!normalized.name) {
+      const startName = normalized.routeStart || '起點'
+      const endName = normalized.routeEnd || '終點'
+      normalized.name = `${startName} → ${endName}`
+    }
+    if (!normalized.address) {
+      normalized.address = normalized.name
+    }
+  }
+  return normalized
+}
 
 onMounted(async () => {
   loadSavedPlaces()
@@ -71,10 +113,9 @@ function readSavedPlaces() {
 }
 
 function loadSavedPlaces() {
-  const list = readSavedPlaces().map((item) => ({
-    ...item,
-    recommendations: Array.isArray(item?.recommendations) ? item.recommendations : [],
-  }))
+  const list = readSavedPlaces()
+    .map((item) => normalizeFavorite(item))
+    .filter(Boolean)
   list.sort((a, b) => {
     const da = a?.addedAt ? Date.parse(a.addedAt) : 0
     const db = b?.addedAt ? Date.parse(b.addedAt) : 0
@@ -186,11 +227,20 @@ function checkAndNotifyPlace(placeId, { immediate = false } = {}) {
 
   // 立即通知（前端層，不需時間間隔判斷）
   try {
+    const isRoad = place.type === 'road'
+    const isRoute = place.type === 'route'
+    const radiusText = isRoad
+      ? `${place.roadDistanceThreshold || ROAD_NOTICE_DISTANCE_M} 公尺內`
+      : isRoute
+        ? `${place.routeDistanceThreshold || ROUTE_NOTICE_DISTANCE_M} 公尺內`
+        : '1 公里內'
+    const subject = place.name || (isRoad ? '收藏道路' : isRoute ? '收藏路線' : '收藏地點')
+    const actor = isRoad ? '此道路' : isRoute ? '此路線' : '此收藏'
     const payload = {
       name: 'notify',
       data: {
-        title: `${place.name || '收藏地點'} 附近施工資訊`,
-        content: `此收藏 1 公里內有 ${constructionCount} 個施工地點`,
+        title: `${subject} 附近施工資訊`,
+        content: `${actor} ${radiusText}有 ${constructionCount} 個施工地點`,
       },
     }
     if (typeof window !== 'undefined' && window.flutterObject?.postMessage) {
@@ -199,6 +249,19 @@ function checkAndNotifyPlace(placeId, { immediate = false } = {}) {
   } catch (e) {
     console.warn('Failed to send notify message', e)
   }
+}
+
+function getEmptyRecommendationMessage(place, category) {
+  if (category === 'upcoming') return '目前沒有未來施工公告'
+  const threshold = place?.roadDistanceThreshold || ROAD_NOTICE_DISTANCE_M
+  if (place?.type === 'road') {
+    return `此道路 ${threshold} 公尺內沒有施工資訊`
+  }
+  if (place?.type === 'route') {
+    const routeThreshold = place?.routeDistanceThreshold || ROUTE_NOTICE_DISTANCE_M
+    return `此路線 ${routeThreshold} 公尺內沒有施工資訊`
+  }
+  return '1 公里內沒有施工資訊'
 }
 
 function selectCategoryForPlace(placeId, category) {
@@ -418,7 +481,16 @@ async function triggerConstructionUpdate() {
             >
               <div class="flex items-start justify-between gap-2">
                 <div class="flex-1">
-                  <div class="text-sm font-semibold text-gray-800">{{ place.name }}</div>
+                  <div class="flex items-center gap-2">
+                    <div class="text-sm font-semibold text-gray-800">{{ place.name }}</div>
+                      <span
+                        v-if="favoriteTypeBadges[place.type]"
+                        class="rounded-full px-2 py-0.5 text-[11px] font-medium"
+                        :class="favoriteTypeBadges[place.type]"
+                      >
+                        {{ place.type === 'road' ? '道路' : place.type === 'route' ? '路線' : '地點' }}
+                      </span>
+                  </div>
                   <div v-if="place.address" class="mt-0.5 text-xs text-gray-500">{{ place.address }}</div>
                   <div v-else-if="place.addr" class="mt-0.5 text-xs text-gray-500">{{ place.addr }}</div>
                 </div>
@@ -454,7 +526,7 @@ async function triggerConstructionUpdate() {
             </span>
             <button
               type="button"
-              class="text-xs text-red-500 hover:underline"
+              class="text-xs text-gray-500 hover:underline"
               @click.stop="removeFavorite(place.id)"
             >
               取消收藏
@@ -527,7 +599,7 @@ async function triggerConstructionUpdate() {
                 </div>
               </template>
               <p v-else class="py-3 text-center text-xs text-gray-500">
-                {{ selectedCategory[place.id] === 'upcoming' ? '目前沒有未來施工公告' : '1 公里內沒有施工資訊' }}
+                {{ getEmptyRecommendationMessage(place, selectedCategory[place.id]) }}
               </p>
             </div>
           </div>
