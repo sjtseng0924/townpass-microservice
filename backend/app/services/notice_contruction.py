@@ -63,55 +63,42 @@ def twd97_to_wgs84(x: float, y: float) -> tuple[float, float]:
 
 def parse_xystring_to_geojson(xystring: str) -> Optional[Dict[str, Any]]:
     """
-    將 XYSTRING 座標字串轉換為 GeoJSON Polygon
+    將 XYSTRING 座標字串轉換為 GeoJSON Point（只取第一個座標點）
     
     Args:
         xystring: 座標字串，格式如 "306329.019,2768888.675,306343.515,2768885.437,..."
     
     Returns:
-        GeoJSON Polygon 格式的字典，如果解析失敗則返回 None
+        GeoJSON Point 格式的字典，如果解析失敗則返回 None
     """
     if not xystring or not xystring.strip():
         return None
     
     try:
-        # 分割座標字串
-        coords = [float(c.strip()) for c in xystring.split(',')]
-        
-        if len(coords) < 6 or len(coords) % 2 != 0:
-            logger.warning(f"Invalid coordinate string length: {len(coords)}")
+        # 只分割並取前兩個座標值（第一個座標點），不解析所有座標
+        parts = xystring.split(',')
+        if len(parts) < 2:
+            logger.warning(f"Invalid coordinate string: not enough values")
             return None
         
-        # 將座標配對成 (x, y) 元組
-        twd97_points = []
-        for i in range(0, len(coords), 2):
-            if i + 1 < len(coords):
-                twd97_points.append((coords[i], coords[i + 1]))
-        
-        if len(twd97_points) < 3:
-            logger.warning(f"Not enough points to form a polygon: {len(twd97_points)}")
-            return None
+        # 只解析第一個座標點 (x, y)
+        first_x = float(parts[0].strip())
+        first_y = float(parts[1].strip())
         
         # 轉換為 WGS84 座標
-        wgs84_points = []
-        for x, y in twd97_points:
-            lon, lat = twd97_to_wgs84(x, y)
-            if lon is not None and lat is not None:
-                wgs84_points.append([lon, lat])
-        
-        if len(wgs84_points) < 3:
-            logger.warning(f"Failed to convert enough points: {len(wgs84_points)}")
+        lon, lat = twd97_to_wgs84(first_x, first_y)
+        if lon is None or lat is None:
+            logger.warning(f"Failed to convert coordinates ({first_x}, {first_y})")
             return None
         
-        # 確保多邊形閉合（第一個點和最後一個點相同）
-        if wgs84_points[0] != wgs84_points[-1]:
-            wgs84_points.append(wgs84_points[0])
-        
-        # 構建 GeoJSON Polygon
+        # 構建 GeoJSON Point
         return {
-            "type": "Polygon",
-            "coordinates": [wgs84_points]
+            "type": "Point",
+            "coordinates": [lon, lat]
         }
+    except (ValueError, IndexError) as e:
+        logger.warning(f"Failed to parse first coordinate from XYSTRING: {e}")
+        return None
     except Exception as e:
         logger.error(f"Failed to parse XYSTRING '{xystring}': {e}", exc_info=True)
         return None
