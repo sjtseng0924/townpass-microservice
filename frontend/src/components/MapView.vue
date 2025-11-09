@@ -842,7 +842,7 @@ async function toggleFavorite() {
         props: r.props || null,
       })),
       notification_enabled: false,
-      distance_threshold: 100.0,
+      distance_threshold: 1000.0,
     }
 
     try {
@@ -895,7 +895,7 @@ async function toggleFavorite() {
         props: item.props || null,
       })),
       notification_enabled: false,
-      distance_threshold: 100.0,
+      distance_threshold: 1000.0,
     }
 
     try {
@@ -952,7 +952,7 @@ async function toggleFavorite() {
         props: item.props || null,
       })),
       notification_enabled: false,
-      distance_threshold: 100.0,
+      distance_threshold: 1000.0,
     }
     console.log('POST /favorites payload:', JSON.parse(JSON.stringify(payload)));
     try {

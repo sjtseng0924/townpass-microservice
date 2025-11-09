@@ -272,7 +272,7 @@ async function toggleFavorite() {
           ...props.properties
         },
         notification_enabled: false,
-        distance_threshold: 100.0,
+        distance_threshold: 1000.0,
       }
 
       await createFavorite(payload, userId.value)
