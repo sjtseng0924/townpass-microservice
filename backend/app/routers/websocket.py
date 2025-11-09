@@ -1,12 +1,13 @@
 import json
 import logging
+import math
 from typing import Dict, Set
 from datetime import datetime, date
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from ..database import SessionLocal
 from .. import models
-import math
 
 logger = logging.getLogger(__name__)
 
@@ -81,18 +82,23 @@ def check_construction_near_favorites(user_id: int, db: Session) -> list[dict]:
     construction_notices = (
         db.query(models.ConstructionNotice)
         .filter(
-            (models.ConstructionNotice.start_date <= today) &
-            (models.ConstructionNotice.end_date >= today)
+            models.ConstructionNotice.start_date <= today,
+            or_(
+                models.ConstructionNotice.end_date >= today,
+                models.ConstructionNotice.end_date.is_(None)
+            )
         )
         .all()
     )
     
+    logger.debug(f"User {user_id}: Found {len(favorites)} favorites with notifications enabled, {len(construction_notices)} ongoing constructions")
+    
     alerts = []
-    notified_combinations = set()  # 用於去重 (favorite_id, construction_id)
     
     for favorite in favorites:
         favorite_coords = get_favorite_coordinates(favorite)
         if not favorite_coords:
+            logger.debug(f"User {user_id}: Favorite {favorite.id} ({favorite.name}) has no coordinates")
             continue
         
         threshold_meters = favorite.distance_threshold or 100.0
@@ -106,33 +112,36 @@ def check_construction_near_favorites(user_id: int, db: Session) -> list[dict]:
             if isinstance(geometry, dict) and geometry.get('type') == 'Point':
                 coords = geometry.get('coordinates')
                 if isinstance(coords, list) and len(coords) >= 2:
-                    con_lon = coords[0]
-                    con_lat = coords[1]
+                    con_lon = float(coords[0])
+                    con_lat = float(coords[1])
                     
                     # 檢查是否在收藏地點的閾值範圍內
                     for fav_lat, fav_lon in favorite_coords:
                         distance = haversine_distance_meters(fav_lat, fav_lon, con_lat, con_lon)
                         
                         if distance <= threshold_meters:
-                            # 避免重複通知
-                            key = (favorite.id, construction.id)
-                            if key not in notified_combinations:
-                                notified_combinations.add(key)
-                                alerts.append({
-                                    'favorite_id': favorite.id,
-                                    'favorite_name': favorite.name,
-                                    'favorite_type': favorite.type,
-                                    'construction_id': construction.id,
-                                    'construction_name': construction.name,
-                                    'construction_road': construction.road,
-                                    'construction_type': construction.type,
-                                    'distance_meters': round(distance),
-                                    'start_date': construction.start_date.isoformat() if construction.start_date else None,
-                                    'end_date': construction.end_date.isoformat() if construction.end_date else None,
-                                    'url': construction.url,
-                                })
+                            alerts.append({
+                                'favorite_id': favorite.id,
+                                'favorite_name': favorite.name,
+                                'favorite_type': favorite.type,
+                                'construction_id': construction.id,
+                                'construction_name': construction.name,
+                                'construction_road': construction.road,
+                                'construction_type': construction.type,
+                                'distance_meters': round(distance),
+                                'start_date': construction.start_date.isoformat() if construction.start_date else None,
+                                'end_date': construction.end_date.isoformat() if construction.end_date else None,
+                                'url': construction.url,
+                            })
+                            logger.info(
+                                f"User {user_id}: Found nearby construction - "
+                                f"Favorite '{favorite.name}' (id={favorite.id}) has construction "
+                                f"'{construction.name}' (id={construction.id}) at {round(distance)}m"
+                            )
                             break  # 找到匹配就跳出內層循環
     
+    if alerts:
+        logger.info(f"User {user_id}: Generated {len(alerts)} alerts")
     return alerts
 
 
@@ -220,7 +229,10 @@ async def send_construction_alert(external_id: str, alerts: list[dict]):
 async def check_and_notify_all_users():
     """檢查所有在線用戶的收藏地點並發送通知"""
     if not active_connections:
+        logger.debug("No active WebSocket connections, skipping check")
         return
+    
+    logger.info(f"Checking notifications for {len(active_connections)} online users")
     
     db = SessionLocal()
     try:
@@ -230,12 +242,24 @@ async def check_and_notify_all_users():
             user = db.query(models.User).filter(models.User.external_id == external_id).first()
             if user:
                 online_users.append((external_id, user.id))
+            else:
+                logger.warning(f"User with external_id={external_id} not found in database")
+        
+        logger.info(f"Found {len(online_users)} valid online users")
         
         for external_id, user_id in online_users:
-            alerts = check_construction_near_favorites(user_id, db)
-            if alerts:
-                await send_construction_alert(external_id, alerts)
-                logger.info(f"Sent {len(alerts)} alerts to user {external_id}")
+            try:
+                alerts = check_construction_near_favorites(user_id, db)
+                if alerts:
+                    success = await send_construction_alert(external_id, alerts)
+                    if success:
+                        logger.info(f"✓ Successfully sent {len(alerts)} alerts to user {external_id} (user_id={user_id})")
+                    else:
+                        logger.warning(f"✗ Failed to send alerts to user {external_id} (user_id={user_id})")
+                else:
+                    logger.debug(f"No alerts for user {external_id} (user_id={user_id})")
+            except Exception as e:
+                logger.error(f"Error checking user {external_id} (user_id={user_id}): {e}", exc_info=True)
     except Exception as e:
         logger.error(f"Error in check_and_notify_all_users: {e}", exc_info=True)
     finally:
