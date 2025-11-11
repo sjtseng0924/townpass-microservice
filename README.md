@@ -11,10 +11,10 @@
 - 未來公告：提供即將施工之預告資訊，並且依據收藏地點進行分類
 - 開車提醒：背景 GPS 偵測 + 語音播報，接近施工點自動提醒
 <p align="center">
-    <img src="display/路線查詢與收藏.jpeg" width="350">
-    <img src="display/施工公告.jpeg" width="350">
-    <img src="display/個人化查看地點與通知.jpeg" width="350">
-    <img src="display/路上偵測.jpeg" width="350">
+    <img src="display/路線查詢與收藏.jpeg" width="200">
+    <img src="display/施工公告.jpeg" width="200">
+    <img src="display/個人化查看地點與通知.jpeg" width="200">
+    <img src="display/路上偵測.jpeg" width="200">
 </p>
 ## Award
 台北城市微服務大黑客松決賽作品
